@@ -6,13 +6,17 @@ const ORIGINAL_MODELS = [
   { name: "Essenza Mini", krups: ["Blanca", "Negra", "Gris"], delonghi: ["Negra", "Lima", "Roja"] },
   { name: "Inissia", krups: ["Blanca", "Roja"], delonghi: ["Crema", "Negra"] },
   { name: "Pixie", krups: [], delonghi: [] },
-  { name: "CitiZ", delonghi: [] },
+  { name: "CitiZ", krups: [], delonghi: [] },
+  { name: "Lattissima Touch", delonghi: [] },
   { name: "Lattissima One", delonghi: [] },
 ];
 const VERTUO_MODELS = [
   { name: "Pop", krups: ["Blanca", "Roja", "Mint"], delonghi: ["Negra", "Azul", "Mango"] },
-  { name: "Next", krups: ["Roja", "Gris claro", "Gris mate"], delonghi: ["Gris oscuro", "Blanca", "Negro mate"] },
-  { name: "Vertuo Up", krups: ["Negra", "Azul"], delonghi: ["Blanca", "Antracita"] },
+  { name: "Next", krups: ["Roja", "Premium Negro", "Gris claro", "Negro mate"], delonghi: ["Gris oscuro", "Blanca", "Negro mate", "Premium Marrón"] },
+  { name: "Plus", krups: ["Blanca", "Negra"], delonghi: ["Roja", "Negra"] },
+  { name: "Lattissima", delonghi: ["Blanca", "Negra"] },
+  { name: "Bundle Pop + Travel Mug", nespresso: ["Blanca", "Negra"] },
+  { name: "Vertuo Up", nespresso: ["BLK", "Blue", "White", "Gris"] },
 ];
 
 const CATEGORIES = [
@@ -39,6 +43,7 @@ const CATEGORIES = [
 const BRANDS = [
   { id: "krups", label: "Krups" },
   { id: "delonghi", label: "De'Longhi" },
+  { id: "nespresso", label: "Nespresso" },
 ];
 
 const EXTRA = {
