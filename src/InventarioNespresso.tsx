@@ -246,7 +246,7 @@ export default function InventarioNespresso() {
   const remember = (label) => {
     setUndo({ label, snap: { counts, extras, reviewed, history, collapsed } });
     if (undoTimer.current) clearTimeout(undoTimer.current);
-    undoTimer.current = setTimeout(() => setUndo(null), 5000);
+    undoTimer.current = setTimeout(() => setUndo(null), 3000);
   };
   const doUndo = () => {
     if (!undo) return;
