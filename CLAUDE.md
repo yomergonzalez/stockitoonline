@@ -42,6 +42,15 @@ npm run preview    # serve the production build locally
 
 ## Deploy
 
+**GitHub Pages (free, current target):** [.github/workflows/deploy.yml](.github/workflows/deploy.yml)
+builds and publishes `dist/` on every push to `main` (repo must be public, Settings → Pages →
+Source: GitHub Actions). `vite.config.ts` uses `base: "./"` so the same build works at
+`yomergonzalez.github.io/stockitoonline/` and at a custom root domain. The app is a PWA
+(`public/manifest.webmanifest`, `public/sw.js` network-first offline cache, icons in `public/`)
+so it can be installed on iPhone via Safari → Share → Add to Home Screen.
+
+**Legacy VPS deploy:**
+
 The app is a **static SPA** served by **nginx** on a DigitalOcean VPS (`178.62.204.145`,
 Ubuntu 24.04), sharing the box with another site (`migrantis.es`) via name-based virtual hosting.
 To ship a change:

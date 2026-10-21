@@ -21,3 +21,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <InventarioNespresso />
   </React.StrictMode>
 );
+
+// Service worker: permite abrir la app sin conexión una vez instalada en el móvil.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js");
+  });
+}
