@@ -665,20 +665,22 @@ export default function InventarioNespresso() {
   };
 
   /* texto con negrita en lo que tiene unidades: "Krups: Blanca 3 · Negra 0" */
-  const renderBrandParts = (catId, model, bId, accent, skipZeros) => {
+  const valIn = (c, catId, mName, bId, k) => Number(c?.[catId]?.[mName]?.[bId]?.[k]) || 0;
+  const brandTotalIn = (c, catId, model, bId) => (keysFor(model, bId) || []).reduce((s, k) => s + valIn(c, catId, model.name, bId, k), 0);
+  const renderBrandParts = (c, catId, model, bId, skipZeros) => {
     const keys = keysFor(model, bId);
     const label = brandLabel(bId);
-    const shown = keys.filter((k) => !skipZeros || counts[catId][model.name][bId][k]);
+    const shown = keys.filter((k) => !skipZeros || valIn(c, catId, model.name, bId, k));
     return (
       <>
         <span>{label}{keys[0] === "" ? " " : ": "}</span>
         {shown.map((k, i) => {
-          const v = counts[catId][model.name][bId][k] || 0;
+          const v = valIn(c, catId, model.name, bId, k);
           return (
             <span key={k}>
               {i > 0 && " · "}
               {k && `${k} `}
-              {v ? <b style={{ color: accent }}>{v}</b> : <span>{v}</span>}
+              {v ? <b style={{ color: INK }}>{v}</b> : <span>{v}</span>}
             </span>
           );
         })}
@@ -693,6 +695,94 @@ export default function InventarioNespresso() {
       <span className="text-xs font-semibold ml-1.5" style={{ color: d > 0 ? "#138A72" : "#C42E63", fontVariantNumeric: "tabular-nums" }}>
         {d > 0 ? `+${d}` : `−${-d}`}
       </span>
+    );
+  };
+
+  /* fila "comparado con…" + botón Ocultar ceros (resumen e historial) */
+  const renderCompareBar = (base) => (
+    <div className="px-5 pt-3 flex items-center justify-between gap-3">
+      <span className="text-xs" style={{ color: MUTED }}>
+        {base ? <>Diferencias vs. conteo del <b>{fmtDateTime(base.at)}</b></> : "Sin conteo anterior para comparar"}
+      </span>
+      <button onClick={() => setHideZeros((v) => !v)} aria-pressed={hideZeros}
+        className="linkbtn rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 flex-shrink-0"
+        style={{ background: hideZeros ? INK : "#fff", color: hideZeros ? "#fff" : INK, border: `1px solid ${hideZeros ? INK : LINE}` }}>
+        <EyeOff size={14} /> Ocultar ceros
+      </button>
+    </div>
+  );
+
+  /* cuerpo del resumen para un conteo cualquiera (actual o del historial) */
+  const renderSummaryBody = (c, ex, base) => {
+    const total = CATEGORIES.reduce((s, cat) => s + catTotalIn(c, cat), 0);
+    const exTotal = ex.reduce((s, e) => s + (e.qty || 0), 0);
+    const baseEx = (name) => (base?.extras || []).find((e) => e.name === name)?.qty || 0;
+    return (
+      <div className="px-5 py-4 space-y-5">
+        {CATEGORIES.map((cat) => {
+          const models = cat.models.filter((m) => !hideZeros || modelTotalIn(c, cat.id, m));
+          return (
+            <div key={cat.id}>
+              <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: cat.accent }}>
+                {cat.name} · {catTotalIn(c, cat)} máquinas
+                {base && <Diff now={catTotalIn(c, cat)} before={catTotalIn(base.counts, cat)} />}
+              </div>
+              {models.length === 0 && <div className="text-xs" style={{ color: MUTED }}>Nada contado en {cat.name}.</div>}
+              <div className="space-y-2">
+                {models.map((model) => {
+                  const t = modelTotalIn(c, cat.id, model);
+                  const diff = base ? <Diff now={t} before={modelTotalIn(base.counts, cat.id, model)} /> : null;
+                  const brands = modelBrands(model).filter((b) => !hideZeros || brandTotalIn(c, cat.id, model, b.id));
+                  if (allSingle(model)) {
+                    return (
+                      <div key={model.name} className="flex items-center justify-between text-sm py-1" style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }}>
+                        <span className="font-medium">{model.name}</span>
+                        <span style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>
+                          {brands.map((b, i) => (
+                            <span key={b.id}>{i > 0 && "  ·  "}{renderBrandParts(c, cat.id, model, b.id, false)}</span>
+                          ))}
+                          {" "}<b style={{ color: t ? cat.accent : MUTED }}>{t}</b>{diff}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={model.name} style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }} className="pb-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-semibold">{model.name}</span>
+                        <span><b style={{ color: t ? cat.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{t}</b>{diff}</span>
+                      </div>
+                      {brands.map((b) => (
+                        <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{renderBrandParts(c, cat.id, model, b.id, hideZeros)}</div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="flex items-center justify-between pt-1 text-sm font-bold">
+          <span>Total máquinas</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{total}{base && <Diff now={total} before={base.total} />}</span>
+        </div>
+
+        {ex.length > 0 && (
+          <div>
+            <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: EXTRA.accent }}>Otros productos · {exTotal}</div>
+            {ex.filter((e) => !hideZeros || e.qty).map((e) => (
+              <div key={e.name} className="flex items-center justify-between text-sm py-2" style={{ borderBottom: `1px solid ${LINE}`, opacity: e.qty ? 1 : 0.5 }}>
+                <span className="font-medium">{e.name}</span>
+                <span>
+                  <span className="font-bold" style={{ color: e.qty ? EXTRA.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{e.qty}</span>
+                  {base && <Diff now={e.qty} before={baseEx(e.name)} />}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -937,8 +1027,8 @@ export default function InventarioNespresso() {
       {/* Resumen */}
       {showSummary && (
         <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowSummary(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
-            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4" style={{ background: HEADER_GRAD, color: "#fff" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ background: HEADER_GRAD, color: "#fff" }}>
               <div>
                 <div className="font-bold">Resumen para GESIMO</div>
                 <div className="text-xs" style={{ opacity: 0.9 }}>{today} · {grandTotal} máquinas</div>
@@ -946,160 +1036,105 @@ export default function InventarioNespresso() {
               <button onClick={() => setShowSummary(false)} aria-label="Cerrar" className="rounded-full p-1" style={{ color: "#fff" }}><X size={22} /></button>
             </div>
 
-            <div className="px-5 pt-3 flex items-center justify-between gap-3">
-              <span className="text-xs" style={{ color: MUTED }}>
-                {lastEntry ? <>Diferencias vs. conteo del <b>{fmtDateTime(lastEntry.at)}</b></> : "Sin conteos anteriores para comparar"}
-              </span>
-              <button onClick={() => setHideZeros((v) => !v)} aria-pressed={hideZeros}
-                className="linkbtn rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 flex-shrink-0"
-                style={{ background: hideZeros ? INK : "#fff", color: hideZeros ? "#fff" : INK, border: `1px solid ${hideZeros ? INK : LINE}` }}>
-                <EyeOff size={14} /> Ocultar ceros
-              </button>
+            <div className="overflow-y-auto flex-1">
+              {renderCompareBar(lastEntry)}
+              {renderSummaryBody(counts, extras, lastEntry)}
             </div>
 
-            <div className="px-5 py-4 space-y-5">
-              {CATEGORIES.map((cat) => {
-                const models = cat.models.filter((m) => !hideZeros || modelTotal(cat.id, m));
-                return (
-                  <div key={cat.id}>
-                    <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: cat.accent }}>
-                      {cat.name} · {catTotal(cat)} máquinas
-                      {lastEntry && <Diff now={catTotal(cat)} before={catTotalIn(lastEntry.counts, cat)} />}
-                    </div>
-                    {models.length === 0 && <div className="text-xs" style={{ color: MUTED }}>Nada contado en {cat.name}.</div>}
-                    <div className="space-y-2">
-                      {models.map((model) => {
-                        const t = modelTotal(cat.id, model);
-                        const diff = lastEntry ? <Diff now={t} before={modelTotalIn(lastEntry.counts, cat.id, model)} /> : null;
-                        if (allSingle(model)) {
-                          return (
-                            <div key={model.name} className="flex items-center justify-between text-sm py-1" style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }}>
-                              <span className="font-medium">{model.name}</span>
-                              <span style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>
-                                {modelBrands(model).filter((b) => !hideZeros || brandTotal(cat.id, model, b.id)).map((b, i) => (
-                                  <span key={b.id}>{i > 0 && "  ·  "}{renderBrandParts(cat.id, model, b.id, INK, false)}</span>
-                                ))}
-                                {" "}<b style={{ color: t ? cat.accent : MUTED }}>{t}</b>{diff}
-                              </span>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div key={model.name} style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }} className="pb-2">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-semibold">{model.name}</span>
-                              <span><b style={{ color: t ? cat.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{t}</b>{diff}</span>
-                            </div>
-                            {modelBrands(model).filter((b) => !hideZeros || brandTotal(cat.id, model, b.id)).map((b) => (
-                              <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{renderBrandParts(cat.id, model, b.id, INK, hideZeros)}</div>
-                            ))}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-
-              <div className="flex items-center justify-between pt-1 text-sm font-bold">
-                <span>Total máquinas</span>
-                <span style={{ fontVariantNumeric: "tabular-nums" }}>{grandTotal}{lastEntry && <Diff now={grandTotal} before={lastEntry.total} />}</span>
-              </div>
-
-              {extras.length > 0 && (
-                <div>
-                  <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: EXTRA.accent }}>Otros productos · {extrasTotal}</div>
-                  {extras.filter((e) => !hideZeros || e.qty).map((e) => (
-                    <div key={e.name} className="flex items-center justify-between text-sm py-2" style={{ borderBottom: `1px solid ${LINE}`, opacity: e.qty ? 1 : 0.5 }}>
-                      <span className="font-medium">{e.name}</span>
-                      <span className="font-bold" style={{ color: e.qty ? EXTRA.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{e.qty}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="px-5 pt-1" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
-              <div className="flex gap-3">
-                <a href={waUrl} target="_blank" rel="noopener noreferrer" className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2" style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
-                  <Send size={17} /> WhatsApp
+            {/* Acciones siempre a mano */}
+            <div className="flex-shrink-0 px-4 pt-3" style={{ borderTop: `1px solid ${LINE}`, background: PAPER, paddingBottom: `calc(12px + ${SAFE_BOTTOM})` }}>
+              <div className="grid grid-cols-4 gap-2">
+                <button onClick={saveToHistory} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: INK, color: "#fff" }}>
+                  {histDone ? <Check size={20} /> : <History size={20} />}
+                  {histDone ? "Guardado" : "Guardar"}
+                </button>
+                <a href={waUrl} target="_blank" rel="noopener noreferrer" className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
+                  <Send size={20} /> WhatsApp
                 </a>
-                <button onClick={copySummary} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2" style={{ background: INK, color: "#fff" }}>
-                  {copied ? (<><Check size={17} /> Copiado</>) : (<><ClipboardList size={17} /> Copiar</>)}
+                <button onClick={copySummary} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
+                  {copied ? <Check size={20} /> : <ClipboardList size={20} />}
+                  {copied ? "Copiado" : "Copiar"}
+                </button>
+                <button onClick={shareImage} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: HEADER_GRAD, color: "#fff" }}>
+                  {imgDone ? <Check size={20} /> : <ImageIcon size={20} />}
+                  {imgDone ? "Lista" : "Imagen"}
                 </button>
               </div>
-              <button onClick={shareImage} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: HEADER_GRAD, color: "#fff" }}>
-                {imgDone ? (<><Check size={17} /> Imagen lista</>) : (<><ImageIcon size={17} /> Descargar imagen</>)}
-              </button>
-              <button onClick={saveToHistory} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
-                {histDone ? (<><Check size={17} /> Guardado en el historial</>) : (<><History size={17} /> Guardar en el historial</>)}
-              </button>
-              <p className="text-xs mt-2 text-center" style={{ color: MUTED }}>WhatsApp y Copiar envían el resumen completo · Imagen crea un archivo para compartir o guardar.</p>
+              <p className="text-[11px] mt-2 text-center" style={{ color: MUTED }}>Guardar lo añade al historial · WhatsApp, Copiar e Imagen envían el resumen completo.</p>
             </div>
           </div>
         </div>
       )}
 
       {/* Historial */}
-      {showHistory && (
-        <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowHistory(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
-            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4" style={{ background: INK, color: "#fff" }}>
-              <div>
-                <div className="font-bold">Historial de conteos</div>
-                <div className="text-xs" style={{ opacity: 0.8 }}>Se guarda al reiniciar o desde el resumen · últimos {HISTORY_MAX}</div>
+      {showHistory && (() => {
+        const idx = history.findIndex((h) => h.id === openEntry);
+        const entry = idx >= 0 ? history[idx] : null;
+        const prev = entry ? history[idx + 1] || null : null;
+        return (
+          <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => { setShowHistory(false); setOpenEntry(null); }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
+              <div className="sticky top-0 z-10 flex items-center gap-2 px-5 py-4" style={{ background: entry ? HEADER_GRAD : INK, color: "#fff" }}>
+                {entry && (
+                  <button onClick={() => setOpenEntry(null)} aria-label="Volver al historial" className="rounded-full p-1 -ml-2" style={{ color: "#fff" }}>
+                    <ChevronDown size={22} style={{ transform: "rotate(90deg)" }} />
+                  </button>
+                )}
+                <div className="flex-1 min-w-0">
+                  {entry ? (
+                    <>
+                      <div className="font-bold">Conteo del {fmtDateTime(entry.at)}</div>
+                      <div className="text-xs" style={{ opacity: 0.9 }}>{entry.total} máquinas{entry.extrasTotal ? ` · ${entry.extrasTotal} otros` : ""}</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-bold">Historial de conteos</div>
+                      <div className="text-xs" style={{ opacity: 0.8 }}>Se guarda al reiniciar o desde el resumen · últimos {HISTORY_MAX}</div>
+                    </>
+                  )}
+                </div>
+                <button onClick={() => { setShowHistory(false); setOpenEntry(null); }} aria-label="Cerrar" className="rounded-full p-1" style={{ color: "#fff" }}><X size={22} /></button>
               </div>
-              <button onClick={() => setShowHistory(false)} aria-label="Cerrar" className="rounded-full p-1" style={{ color: "#fff" }}><X size={22} /></button>
-            </div>
-            <div className="px-5 py-4 space-y-3" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
-              {history.length === 0 && (
-                <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Al reiniciar, el conteo actual se guarda aquí automáticamente.</p>
-              )}
-              {history.map((h, idx) => {
-                const open = openEntry === h.id;
-                const prev = history[idx + 1];
-                return (
-                  <div key={h.id} className="rounded-2xl px-4 py-3 shadow-sm" style={{ background: SURFACE, border: `1px solid ${LINE}` }}>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setOpenEntry(open ? null : h.id)} aria-expanded={open} className="linkbtn flex-1 text-left flex items-center gap-1.5 min-w-0" style={{ background: "transparent", color: INK }}>
-                        <ChevronDown size={18} style={{ color: MUTED, transform: open ? "none" : "rotate(-90deg)", transition: "transform .15s ease", flexShrink: 0 }} />
-                        <span className="min-w-0">
+
+              {entry ? (
+                <div style={{ paddingBottom: `calc(16px + ${SAFE_BOTTOM})` }}>
+                  {renderCompareBar(prev)}
+                  {renderSummaryBody(entry.counts, entry.extras || [], prev)}
+                  <div className="px-5">
+                    <button onClick={() => { removeHistoryEntry(entry.id); setOpenEntry(null); }} className="linkbtn w-full rounded-xl py-3 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: "#fff", border: `1px solid ${LINE}`, color: "#C42E63" }}>
+                      <Trash2 size={16} /> Borrar este conteo
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-5 py-4 space-y-3" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
+                  {history.length === 0 && (
+                    <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Usa "Guardar" en el resumen, o al reiniciar se guarda solo.</p>
+                  )}
+                  {history.map((h, i) => {
+                    const before = history[i + 1];
+                    return (
+                      <button key={h.id} onClick={() => setOpenEntry(h.id)}
+                        className="linkbtn w-full text-left rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3"
+                        style={{ background: SURFACE, border: `1px solid ${LINE}`, color: INK }}>
+                        <span className="flex-1 min-w-0">
                           <span className="block font-semibold text-sm">{fmtDateTime(h.at)}</span>
                           <span className="block text-xs" style={{ color: MUTED }}>
-                            {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? 0}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
+                            {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? catTotalIn(h.counts, c)}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
                           </span>
                         </span>
+                        <span className="font-bold text-lg" style={{ fontVariantNumeric: "tabular-nums" }}>{h.total}</span>
+                        {before && <Diff now={h.total} before={before.total} />}
+                        <ChevronDown size={18} style={{ color: MUTED, transform: "rotate(-90deg)", flexShrink: 0 }} />
                       </button>
-                      <span className="font-bold text-lg" style={{ fontVariantNumeric: "tabular-nums" }}>{h.total}</span>
-                      {prev && <Diff now={h.total} before={prev.total} />}
-                      <button onClick={() => removeHistoryEntry(h.id)} aria-label={`Borrar conteo del ${fmtDateTime(h.at)}`} className="linkbtn p-1.5 rounded-full flex-shrink-0" style={{ color: MUTED }}><Trash2 size={15} /></button>
-                    </div>
-                    {open && (
-                      <div className="mt-2 pt-2 space-y-1 text-xs" style={{ borderTop: `1px solid ${LINE}` }}>
-                        {CATEGORIES.flatMap((c) => c.models.map((m) => ({ c, m, t: modelTotalIn(h.counts, c.id, m) })))
-                          .filter((r) => r.t)
-                          .map((r) => (
-                            <div key={`${r.c.id}/${r.m.name}`} className="flex justify-between">
-                              <span><span style={{ color: r.c.accent, fontWeight: 700 }}>{r.c.name}</span> · {r.m.name}</span>
-                              <b style={{ fontVariantNumeric: "tabular-nums" }}>{r.t}</b>
-                            </div>
-                          ))}
-                        {(h.extras || []).filter((e) => e.qty).map((e) => (
-                          <div key={`x/${e.name}`} className="flex justify-between">
-                            <span><span style={{ color: EXTRA.accent, fontWeight: 700 }}>Otros</span> · {e.name}</span>
-                            <b style={{ fontVariantNumeric: "tabular-nums" }}>{e.qty}</b>
-                          </div>
-                        ))}
-                        {h.total + (h.extrasTotal || 0) === 0 && <div style={{ color: MUTED }}>Conteo vacío.</div>}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Quitar producto extra */}
       {removeExtraName && (
