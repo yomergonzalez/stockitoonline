@@ -1,18 +1,22 @@
 import { useState, useEffect } from "react";
-import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, FileText } from "lucide-react";
+import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon } from "lucide-react";
 
 /* ── Estructura real: modelo → marca → colores ─────────────── */
 const ORIGINAL_MODELS = [
   { name: "Essenza Mini", krups: ["Blanca", "Negra", "Gris"], delonghi: ["Negra", "Lima", "Roja"] },
   { name: "Inissia", krups: ["Blanca", "Roja"], delonghi: ["Crema", "Negra"] },
   { name: "Pixie", krups: [], delonghi: [] },
-  { name: "CitiZ", delonghi: [] },
+  { name: "CitiZ", krups: [], delonghi: [] },
+  { name: "Lattissima Touch", delonghi: [] },
   { name: "Lattissima One", delonghi: [] },
 ];
 const VERTUO_MODELS = [
   { name: "Pop", krups: ["Blanca", "Roja", "Mint"], delonghi: ["Negra", "Azul", "Mango"] },
-  { name: "Next", krups: ["Roja", "Gris claro", "Gris mate"], delonghi: ["Gris oscuro", "Blanca", "Negro mate"] },
-  { name: "Vertuo Up", krups: ["Negra", "Azul"], delonghi: ["Blanca", "Antracita"] },
+  { name: "Next", krups: ["Roja", "Premium Negro", "Gris claro", "Negro mate"], delonghi: ["Gris oscuro", "Blanca", "Negro mate", "Premium Marrón"] },
+  { name: "Plus", krups: ["Blanca", "Negra"], delonghi: ["Roja", "Negra"] },
+  { name: "Lattissima", delonghi: ["Blanca", "Negra"] },
+  { name: "Bundle Pop + Travel Mug", nespresso: ["Blanca", "Negra"] },
+  { name: "Vertuo Up", nespresso: ["BLK", "Blue", "White", "Gris"] },
 ];
 
 const CATEGORIES = [
@@ -39,6 +43,7 @@ const CATEGORIES = [
 const BRANDS = [
   { id: "krups", label: "Krups" },
   { id: "delonghi", label: "De'Longhi" },
+  { id: "nespresso", label: "Nespresso" },
 ];
 
 const EXTRA = {
@@ -87,79 +92,6 @@ const buzz = () => {
   } catch (e) {}
 };
 
-/* ── Generador de PDF (sin dependencias) ───────────────────── */
-const WINANSI = {
-  "á": 0xe1, "é": 0xe9, "í": 0xed, "ó": 0xf3, "ú": 0xfa, "ü": 0xfc, "ñ": 0xf1,
-  "Á": 0xc1, "É": 0xc9, "Í": 0xcd, "Ó": 0xd3, "Ú": 0xda, "Ü": 0xdc, "Ñ": 0xd1,
-  "¿": 0xbf, "¡": 0xa1, "·": 0xb7, "•": 0x95, "…": 0x85, "—": 0x97, "–": 0x96,
-  "€": 0x80, "ª": 0xaa, "º": 0xba,
-};
-const pdfEscape = (s) => {
-  let out = "";
-  for (const ch of s) {
-    if (ch === "\\") out += "\\\\";
-    else if (ch === "(") out += "\\(";
-    else if (ch === ")") out += "\\)";
-    else {
-      const code = ch.charCodeAt(0);
-      if (code < 128) out += ch;
-      else if (WINANSI[ch] != null) out += "\\" + WINANSI[ch].toString(8).padStart(3, "0");
-      else out += "?";
-    }
-  }
-  return out;
-};
-const makeInventoryPdf = (lines) => {
-  const PW = 612, PH = 792, ML = 56, MT = 744, MB = 56;
-  const pages = [];
-  let cur = [];
-  let y = MT;
-  for (const ln of lines) {
-    const lh = Math.round((ln.s || 11) * 1.5);
-    if (y - lh < MB) { pages.push(cur); cur = []; y = MT; }
-    cur.push({ ...ln, y });
-    y -= lh;
-  }
-  if (cur.length) pages.push(cur);
-  if (!pages.length) pages.push([]);
-  const contents = pages.map((pg) => {
-    let s = "";
-    for (const ln of pg) {
-      if (!ln.t) continue;
-      const font = ln.b ? "F2" : "F1";
-      const col = ln.c ? `${ln.c[0]} ${ln.c[1]} ${ln.c[2]} rg` : "0 0 0 rg";
-      s += `BT /${font} ${ln.s || 11} Tf ${col} 1 0 0 1 ${ML} ${ln.y} Tm (${pdfEscape(ln.t)}) Tj ET\n`;
-    }
-    return s;
-  });
-  const nPages = pages.length;
-  const contentNums = [];
-  const pageNums = [];
-  let n = 5;
-  for (let i = 0; i < nPages; i++) { contentNums.push(n++); pageNums.push(n++); }
-  const objs = [];
-  objs[1] = `<< /Type /Catalog /Pages 2 0 R >>`;
-  objs[2] = `<< /Type /Pages /Kids [${pageNums.map((p) => `${p} 0 R`).join(" ")}] /Count ${nPages} /MediaBox [0 0 ${PW} ${PH}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> >>`;
-  objs[3] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`;
-  objs[4] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>`;
-  for (let i = 0; i < nPages; i++) {
-    const stream = contents[i];
-    objs[contentNums[i]] = `<< /Length ${stream.length} >>\nstream\n${stream}endstream`;
-    objs[pageNums[i]] = `<< /Type /Page /Parent 2 0 R /Contents ${contentNums[i]} 0 R >>`;
-  }
-  const maxObj = objs.length - 1;
-  let pdf = "%PDF-1.4\n";
-  const offsets = [];
-  for (let i = 1; i <= maxObj; i++) { offsets[i] = pdf.length; pdf += `${i} 0 obj\n${objs[i]}\nendobj\n`; }
-  const xrefStart = pdf.length;
-  pdf += `xref\n0 ${maxObj + 1}\n0000000000 65535 f \n`;
-  for (let i = 1; i <= maxObj; i++) pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
-  pdf += `trailer\n<< /Size ${maxObj + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
-  const bytes = new Uint8Array(pdf.length);
-  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
-  return new Blob([bytes], { type: "application/pdf" });
-};
-
 function AddInput({ value, onChange, onCancel, onAdd, accent, grad, placeholder }) {
   return (
     <div style={{ background: SURFACE, border: `1.5px solid ${accent}` }} className="rounded-2xl px-3 py-3 flex items-center gap-2">
@@ -189,7 +121,7 @@ export default function InventarioNespresso() {
   const [addingExtra, setAddingExtra] = useState(false);
   const [newName, setNewName] = useState("");
   const [copied, setCopied] = useState(false);
-  const [pdfDone, setPdfDone] = useState(false);
+  const [imgDone, setImgDone] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -309,49 +241,157 @@ export default function InventarioNespresso() {
     return L.join("\n");
   };
 
-  const buildStyledLines = () => {
-    const L = [
-      { t: "Inventario POS", b: true, s: 18 },
-      { t: today, s: 10, c: [0.45, 0.43, 0.4] },
-      { t: "", s: 6 },
-    ];
+  /* ── Imagen del resumen (canvas, sin dependencias) ───────── */
+  const makeInventoryImage = () => {
+    const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+    const W = 760, PADX = 28;
+    const HEAD = 176, TOPGAP = 10, BOTTOM = 10;
+    const H_SEC = 50, H_SINGLE = 42, H_MHEAD = 42, H_BLINE = 30, H_TOTAL = 64, H_XROW = 40, H_FOOT = 58;
+
+    // 1) lista de filas a pintar + medida de altura
+    const items = [];
     for (const cat of CATEGORIES) {
-      L.push({ t: `${cat.name.toUpperCase()}   ·   ${catTotal(cat)} máquinas`, b: true, s: 12 });
+      items.push({ k: "sec", h: H_SEC, cat });
       for (const model of cat.models) {
-        if (allSingle(model)) {
-          const parts = modelBrands(model).map((b) => `${b.label} ${counts[cat.id][model.name][b.id][""] || 0}`);
-          L.push({ t: `${model.name}:    ${parts.join("    ·    ")}`, s: 11 });
-        } else {
-          L.push({ t: `${model.name}   (${modelTotal(cat.id, model)})`, b: true, s: 11 });
-          for (const b of modelBrands(model)) L.push({ t: `    ${brandLine(cat.id, model, b.id)}`, s: 10.5 });
+        if (allSingle(model)) items.push({ k: "single", h: H_SINGLE, cat, model });
+        else {
+          items.push({ k: "mhead", h: H_MHEAD, cat, model });
+          for (const b of modelBrands(model)) items.push({ k: "bline", h: H_BLINE, cat, model, b });
         }
       }
-      L.push({ t: "", s: 6 });
+      items.push({ k: "gap", h: 10 });
     }
-    L.push({ t: `Total máquinas: ${grandTotal}`, b: true, s: 13 });
+    items.push({ k: "total", h: H_TOTAL });
     if (extras.length) {
-      L.push({ t: "", s: 6 });
-      L.push({ t: "OTROS PRODUCTOS", b: true, s: 12 });
-      for (const e of extras) L.push({ t: `${e.name}:    ${e.qty}`, s: 11 });
+      items.push({ k: "gap", h: 10 });
+      items.push({ k: "xsec", h: H_SEC });
+      for (const e of extras) items.push({ k: "xrow", h: H_XROW, e });
     }
-    return L;
+    items.push({ k: "foot", h: H_FOOT });
+    const contentH = items.reduce((s, it) => s + it.h, 0);
+    const H = HEAD + TOPGAP + contentH + BOTTOM;
+
+    // 2) canvas a 2x para nitidez
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = W * scale;
+    canvas.height = H * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(scale, scale);
+    ctx.textBaseline = "middle";
+
+    const rr = (x, y, w, h, r) => {
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    };
+    const pill = (xRight, cy, text, bg, fg) => {
+      ctx.font = `700 13px ${FONT}`;
+      const tw = ctx.measureText(text).width;
+      const pw = tw + 22, ph = 26, x = xRight - pw, y = cy - ph / 2;
+      ctx.fillStyle = bg; rr(x, y, pw, ph, 13); ctx.fill();
+      ctx.fillStyle = fg; ctx.textAlign = "center";
+      ctx.fillText(text, x + pw / 2, cy + 1);
+    };
+    const hair = (y) => {
+      ctx.strokeStyle = LINE; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(PADX, y + 0.5); ctx.lineTo(W - PADX, y + 0.5); ctx.stroke();
+    };
+
+    // fondo: tarjeta blanca con esquinas redondeadas
+    ctx.clearRect(0, 0, W, H);
+    rr(0, 0, W, H, 26); ctx.save(); ctx.clip();
+    ctx.fillStyle = SURFACE; ctx.fillRect(0, 0, W, H);
+
+    // cabecera con degradado
+    const g = ctx.createLinearGradient(0, 0, W, HEAD);
+    g.addColorStop(0, "#E8842A"); g.addColorStop(1, "#C42E63");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, HEAD);
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "left"; ctx.font = `700 14px ${FONT}`;
+    ctx.fillText("INVENTARIO POS", PADX, 40);
+    ctx.textAlign = "right"; ctx.font = `400 13px ${FONT}`;
+    ctx.globalAlpha = 0.9; ctx.fillText(today, W - PADX, 40); ctx.globalAlpha = 1;
+    ctx.textAlign = "left"; ctx.font = `700 54px ${FONT}`;
+    ctx.fillText(String(grandTotal), PADX, 112);
+    ctx.font = `400 13px ${FONT}`; ctx.globalAlpha = 0.9;
+    ctx.fillText("máquinas en total", PADX, 148); ctx.globalAlpha = 1;
+    let cy = 92;
+    ctx.textAlign = "right";
+    for (const c of CATEGORIES) {
+      ctx.font = `700 16px ${FONT}`; ctx.fillText(c.name, W - PADX - 42, cy);
+      ctx.font = `700 16px ${FONT}`; ctx.fillText(String(catTotal(c)), W - PADX, cy);
+      cy += 26;
+    }
+
+    // contenido
+    let y = HEAD + TOPGAP;
+    for (const it of items) {
+      const mid = y + it.h / 2;
+      if (it.k === "sec" || it.k === "xsec") {
+        const accent = it.k === "sec" ? it.cat.accent : EXTRA.accent;
+        const soft = it.k === "sec" ? it.cat.soft : EXTRA.soft;
+        const deep = it.k === "sec" ? it.cat.accentDeep : EXTRA.accentDeep;
+        const label = it.k === "sec" ? it.cat.name.toUpperCase() : "OTROS PRODUCTOS";
+        const tot = it.k === "sec" ? catTotal(it.cat) : extrasTotal;
+        ctx.textAlign = "left"; ctx.font = `700 15px ${FONT}`; ctx.fillStyle = accent;
+        ctx.fillText(label, PADX, mid + 6);
+        pill(W - PADX, mid + 6, String(tot), soft, deep);
+      } else if (it.k === "single") {
+        ctx.textAlign = "left"; ctx.font = `600 15px ${FONT}`; ctx.fillStyle = INK;
+        ctx.fillText(it.model.name, PADX, mid);
+        const t = modelTotal(it.cat.id, it.model);
+        ctx.textAlign = "right"; ctx.font = `700 15px ${FONT}`; ctx.fillStyle = t ? it.cat.accent : MUTED;
+        ctx.fillText(String(t), W - PADX, mid);
+        const tw = ctx.measureText(String(t)).width;
+        const parts = modelBrands(it.model).map((b) => `${b.label} ${counts[it.cat.id][it.model.name][b.id][""] || 0}`).join("   ·   ");
+        ctx.font = `400 13px ${FONT}`; ctx.fillStyle = MUTED;
+        ctx.fillText(parts, W - PADX - tw - 16, mid);
+        hair(y + it.h);
+      } else if (it.k === "mhead") {
+        ctx.textAlign = "left"; ctx.font = `700 15px ${FONT}`; ctx.fillStyle = INK;
+        ctx.fillText(it.model.name, PADX, mid);
+        const t = modelTotal(it.cat.id, it.model);
+        ctx.textAlign = "right"; ctx.font = `700 15px ${FONT}`; ctx.fillStyle = t ? it.cat.accent : MUTED;
+        ctx.fillText(String(t), W - PADX, mid);
+      } else if (it.k === "bline") {
+        ctx.textAlign = "left"; ctx.font = `400 14px ${FONT}`; ctx.fillStyle = MUTED;
+        ctx.fillText(brandLine(it.cat.id, it.model, it.b.id), PADX + 16, mid);
+        hair(y + it.h);
+      } else if (it.k === "total") {
+        rr(PADX, y + 6, W - PADX * 2, it.h - 12, 16); ctx.fillStyle = INK; ctx.fill();
+        ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.font = `700 16px ${FONT}`;
+        ctx.fillText("Total máquinas", PADX + 18, mid);
+        ctx.textAlign = "right"; ctx.font = `700 24px ${FONT}`;
+        ctx.fillText(String(grandTotal), W - PADX - 18, mid);
+      } else if (it.k === "xrow") {
+        ctx.textAlign = "left"; ctx.font = `600 15px ${FONT}`; ctx.fillStyle = INK;
+        ctx.fillText(it.e.name, PADX, mid);
+        ctx.textAlign = "right"; ctx.font = `700 15px ${FONT}`; ctx.fillStyle = it.e.qty ? EXTRA.accent : MUTED;
+        ctx.fillText(String(it.e.qty), W - PADX, mid);
+        hair(y + it.h);
+      } else if (it.k === "foot") {
+        ctx.textAlign = "center"; ctx.font = `400 12px ${FONT}`; ctx.fillStyle = MUTED;
+        ctx.fillText(`stockito.online  ·  ${today}`, W / 2, mid);
+      }
+      y += it.h;
+    }
+    ctx.restore();
+
+    return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
   };
 
-  const waUrl = `https://wa.me/?text=${encodeURIComponent(buildWhatsAppText())}`;
-
-  const copySummary = async () => {
+  const shareImage = async () => {
+    const blob = await makeInventoryImage();
+    if (!blob) return;
+    const filename = `inventario-${new Date().toISOString().slice(0, 10)}.png`;
     try {
-      await navigator.clipboard.writeText(buildPlainText());
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) { setCopied(false); }
-  };
-
-  const sharePdf = async () => {
-    const blob = makeInventoryPdf(buildStyledLines());
-    const filename = `inventario-${new Date().toISOString().slice(0, 10)}.pdf`;
-    try {
-      const file = new File([blob], filename, { type: "application/pdf" });
+      const file = new File([blob], filename, { type: "image/png" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: "Inventario POS" });
         return;
@@ -363,8 +403,18 @@ export default function InventarioNespresso() {
       a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      setPdfDone(true); setTimeout(() => setPdfDone(false), 2500);
+      setImgDone(true); setTimeout(() => setImgDone(false), 2500);
     } catch (e) {}
+  };
+
+  const waUrl = `https://wa.me/?text=${encodeURIComponent(buildWhatsAppText())}`;
+
+  const copySummary = async () => {
+    try {
+      await navigator.clipboard.writeText(buildPlainText());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) { setCopied(false); }
   };
 
   if (loading) {
@@ -611,10 +661,10 @@ export default function InventarioNespresso() {
                   {copied ? (<><Check size={17} /> Copiado</>) : (<><ClipboardList size={17} /> Copiar</>)}
                 </button>
               </div>
-              <button onClick={sharePdf} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: "#fff", border: `1.5px solid ${INK}`, color: INK }}>
-                {pdfDone ? (<><Check size={17} /> PDF descargado</>) : (<><FileText size={17} /> Compartir PDF</>)}
+              <button onClick={shareImage} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: HEADER_GRAD, color: "#fff" }}>
+                {imgDone ? (<><Check size={17} /> Imagen lista</>) : (<><ImageIcon size={17} /> Descargar imagen</>)}
               </button>
-              <p className="text-xs mt-2 text-center" style={{ color: MUTED }}>WhatsApp y Copiar envían texto · el PDF crea un archivo para compartir o guardar.</p>
+              <p className="text-xs mt-2 text-center" style={{ color: MUTED }}>WhatsApp y Copiar envían texto · Imagen crea un archivo para compartir o guardar.</p>
             </div>
           </div>
         </div>
