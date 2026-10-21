@@ -60,7 +60,7 @@ const NICK_KEY = "conteo-apodo";
 
 // URL de la aplicación web de Google Apps Script (ver sheets/LEEME.md).
 // Vacía = el historial se queda solo en este teléfono.
-const SHEETS_URL = "";
+const SHEETS_URL = "https://script.google.com/macros/s/AKfycbwWqlXxU3NkUasuwF3z9CRB-zY-EDuY8i3KFkyrQTqaByrC6EeHXvXAlwjXVDUwvo0/exec";
 
 const nickKey = (n) => String(n || "").trim().toLowerCase();
 
