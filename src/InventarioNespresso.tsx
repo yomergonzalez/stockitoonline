@@ -57,6 +57,7 @@ const STORAGE_KEY = "conteo-actual";
 const HISTORY_KEY = "conteo-historial";
 const HISTORY_MAX = 50;
 const NICK_KEY = "conteo-apodo";
+const OFFER_KEY = "conteo-oferta-vista"; // último conteo que ya se ofreció cargar (o se reinició)
 
 // URL de la aplicación web de Google Apps Script (ver sheets/LEEME.md).
 // Vacía = el historial se queda solo en este teléfono.
@@ -225,6 +226,9 @@ export default function InventarioNespresso() {
   const [showNick, setShowNick] = useState(false);
   const [nickDraft, setNickDraft] = useState("");
   const [syncState, setSyncState] = useState(SHEETS_URL ? "idle" : "off");
+  const [offerLoad, setOfferLoad] = useState(null);
+  const dismissedRef = useRef("");
+  const forceOfferRef = useRef(false);
   const undoTimer = useRef(null);
   const historyRef = useRef([]);
   const nickRef = useRef("");
@@ -256,6 +260,8 @@ export default function InventarioNespresso() {
               setHistory(norm);
             }
           }
+          const seen = await window.storage.get(OFFER_KEY);
+          if (seen && seen.value) dismissedRef.current = String(seen.value);
           const n = await window.storage.get(NICK_KEY);
           const savedNick = n && n.value ? String(n.value) : "";
           nickRef.current = savedNick;
@@ -369,6 +375,8 @@ export default function InventarioNespresso() {
     (async () => {
       try { if (window.storage) await window.storage.set(NICK_KEY, n); } catch (e) {}
     })();
+    // al cambiar de apodo se ofrece cargar el último conteo de ese apodo
+    if (!first && nickKey(n) !== nickKey(nick)) forceOfferRef.current = true;
     // los conteos guardados antes de tener apodo pasan a ser de este apodo
     if (first) persistHistory(historyRef.current.map((h) => (h.nick ? h : { ...h, nick: n, synced: false })));
     setOpenEntry(null);
@@ -486,24 +494,48 @@ export default function InventarioNespresso() {
     cats: Object.fromEntries(CATEGORIES.map((c) => [c.id, catTotal(c)])),
     extrasTotal,
   });
+  const markSeen = (id) => {
+    dismissedRef.current = String(id || "");
+    (async () => {
+      try { if (window.storage) await window.storage.set(OFFER_KEY, dismissedRef.current); } catch (e) {}
+    })();
+  };
+
+  /* pone en el contador un conteo guardado (se puede deshacer) */
+  const loadEntry = (entry) => {
+    remember(`Cargado el conteo de las ${fmtTime(entry.at)}`);
+    persist(buildCounts(entry.counts || {}), (entry.extras || []).map((e) => ({ name: e.name, qty: Number(e.qty) || 0 })), {});
+    setCollapsed({});
+    markSeen(entry.id);
+  };
+
   const MERGE_MS = 15 * 60 * 1000;
-  /* guarda el conteo: si no cambió nada no duplica, y si el último es de hace
-     menos de 15 min lo actualiza en vez de crear otro */
-  const saveToHistory = () => {
+  /* añade el conteo al historial: si no cambió nada no duplica, y si el último
+     es de hace menos de 15 min lo actualiza en vez de crear otro.
+     Devuelve el id del conteo nuevo (null si no se creó ninguno). */
+  const recordHistory = () => {
     const key = nickKey(nickRef.current);
     const mine = historyRef.current.filter((h) => !h.deleted && nickKey(h.nick) === key);
     const last = mine.reduce((m, h) => (!m || String(h.at) > String(m.at) ? h : m), null);
     const same = last && JSON.stringify(linesOf(last.counts, last.extras)) === JSON.stringify(linesOf(counts, extras));
-    remember("Conteo guardado en el historial");
-    if (!same) {
-      const fresh = makeHistoryEntry();
-      if (last && Date.now() - new Date(last.at).getTime() < MERGE_MS) {
-        persistHistory(historyRef.current.map((h) => (h === last ? { ...fresh, id: last.id } : h)));
-      } else {
-        persistHistory([fresh, ...historyRef.current].slice(0, HISTORY_MAX));
-      }
+    if (same) { markSeen(last.id); return null; }
+    const fresh = makeHistoryEntry();
+    if (last && Date.now() - new Date(last.at).getTime() < MERGE_MS) {
+      persistHistory(historyRef.current.map((h) => (h === last ? { ...fresh, id: last.id } : h)));
+      markSeen(last.id);
       syncNow();
+      return null;
     }
+    persistHistory([fresh, ...historyRef.current].slice(0, HISTORY_MAX));
+    markSeen(fresh.id);
+    syncNow();
+    return fresh.id;
+  };
+
+  const saveToHistory = () => {
+    remember("Conteo guardado en el historial");
+    const created = recordHistory();
+    setUndo((u) => (u ? { ...u, createdId: created } : u));
     // al guardar se empieza una nueva ronda de revisión
     persist(counts, extras, {});
     setCollapsed({});
@@ -517,9 +549,12 @@ export default function InventarioNespresso() {
   };
 
   const doReset = () => {
-    const entry = grandTotal + extrasTotal > 0 ? makeHistoryEntry() : null;
-    remember("Conteo reiniciado", entry && entry.id);
-    if (entry) { persistHistory([entry, ...historyRef.current].slice(0, HISTORY_MAX)); syncNow(); }
+    remember("Conteo reiniciado");
+    // el id del conteo creado se pasa a "Deshacer" para borrarlo también de la hoja
+    const created = grandTotal + extrasTotal > 0 ? recordHistory() : null;
+    setUndo((u) => (u ? { ...u, createdId: created } : u));
+    // tras reiniciar no se ofrece volver a cargar lo que se acaba de cerrar
+    if (!(grandTotal + extrasTotal > 0)) markSeen(lastEntry ? lastEntry.id : "");
     persist(buildCounts(), extras.map((e) => ({ ...e, qty: 0 })), {});
     setCollapsed({});
     setShowReset(false);
@@ -538,6 +573,17 @@ export default function InventarioNespresso() {
   /* cada apodo ve solo sus conteos (los antiguos sin apodo se ven siempre) */
   const visibleHistory = history.filter((h) => !h.deleted && (!h.nick || nickKey(h.nick) === nickKey(nick)));
   const lastEntry = visibleHistory[0] || null;
+
+  /* mismo apodo en otro teléfono (o tras cambiar de apodo): ofrecer seguir con su último conteo */
+  useEffect(() => {
+    if (loading || offerLoad || showNick || !nick) return;
+    if (SHEETS_URL && (syncState === "syncing" || syncState === "idle")) return; // esperar a tener lo último
+    const forced = forceOfferRef.current;
+    forceOfferRef.current = false;
+    if (!lastEntry) return;
+    const empty = grandTotal + extrasTotal === 0;
+    if (forced || (empty && dismissedRef.current !== lastEntry.id)) setOfferLoad(lastEntry);
+  }, [loading, nick, lastEntry && lastEntry.id, syncState, showNick]);
 
   const today = new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" });
   const shortToday = new Date().toLocaleDateString("es-ES", { day: "numeric", month: "short" });
@@ -1322,7 +1368,11 @@ export default function InventarioNespresso() {
                 <div style={{ paddingBottom: `calc(16px + ${SAFE_BOTTOM})` }}>
                   {renderCompareBar(prev, entry.counts, entry.extras || [])}
                   {renderSummaryBody(entry.counts, entry.extras || [], prev)}
-                  <div className="px-5">
+                  <div className="px-5 space-y-2">
+                    <button onClick={() => { loadEntry(entry); setShowHistory(false); setOpenEntry(null); }}
+                      className="linkbtn w-full rounded-xl py-3 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: INK, color: "#fff" }}>
+                      <RotateCcw size={16} style={{ transform: "scaleX(-1)" }} /> Cargar en el contador
+                    </button>
                     <button onClick={() => { removeHistoryEntry(entry.id); setOpenEntry(null); }} className="linkbtn w-full rounded-xl py-3 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: "#fff", border: `1px solid ${LINE}`, color: "#C42E63" }}>
                       <Trash2 size={16} /> Borrar este conteo
                     </button>
@@ -1380,6 +1430,27 @@ export default function InventarioNespresso() {
             <div className="flex gap-3">
               <button onClick={() => setRemoveExtraName(null)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#fff", border: `1px solid ${LINE}` }}>Cancelar</button>
               <button onClick={() => removeExtra(removeExtraName)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#C42E63", color: "#fff" }}>Quitar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Seguir con el último conteo */}
+      {offerLoad && !showNick && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }}>
+          <div style={{ background: PAPER }} className="w-full max-w-xs rounded-3xl p-6 text-center">
+            <div className="font-bold mb-1">¿Seguir con el último conteo?</div>
+            <p className="text-sm mb-1" style={{ color: INK }}>
+              <b>{offerLoad.nick || nick}</b> · {dayLabel(offerLoad.at).toLowerCase()} {fmtTime(offerLoad.at)} · {offerLoad.total} máquinas
+            </p>
+            <p className="text-xs mb-5" style={{ color: MUTED }}>
+              {grandTotal + extrasTotal > 0 ? "Reemplaza lo que hay ahora en el contador. Se puede deshacer." : "Se carga en el contador para seguir contando."}
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => { markSeen(offerLoad.id); setOfferLoad(null); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#fff", border: `1px solid ${LINE}` }}>
+                {grandTotal + extrasTotal > 0 ? "Dejar como está" : "Empezar de cero"}
+              </button>
+              <button onClick={() => { loadEntry(offerLoad); setOfferLoad(null); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: HEADER_GRAD, color: "#fff" }}>Cargar</button>
             </div>
           </div>
         </div>
