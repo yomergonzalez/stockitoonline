@@ -175,6 +175,7 @@ export default function InventarioNespresso() {
   const [scrolled, setScrolled] = useState(false);
   const undoTimer = useRef(null);
   const headerRef = useRef(null);
+  const scrollRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -211,11 +212,17 @@ export default function InventarioNespresso() {
         const el = document.getElementById(`sec-${id}`);
         if (el && el.getBoundingClientRect().top < 140) cur = id;
       }
+      const sc = scrollRef.current;
+      if (sc && sc.scrollTop > 0 && sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) cur = "otros";
       setActiveSec(cur);
     };
     onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    // la lista tiene su propio scroll (ver .app-shell): así Safari no encoge su barra
+    // al bajar y la barra inferior no se queda flotando en mitad de la pantalla
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
   }, [loading]);
 
   const persist = (nextCounts, nextExtras, nextReviewed = reviewed) => {
@@ -797,7 +804,7 @@ export default function InventarioNespresso() {
   const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
 
   return (
-    <div style={{ background: PAPER, color: INK }} className="min-h-screen">
+    <div style={{ background: PAPER, color: INK }} className="app-shell flex flex-col overflow-hidden">
       <style>{`
         @keyframes pop { 0%{transform:scale(1)} 40%{transform:scale(.84)} 100%{transform:scale(1)} }
         @keyframes toastin { from{transform:translateY(12px);opacity:0} to{transform:none;opacity:1} }
@@ -806,11 +813,13 @@ export default function InventarioNespresso() {
         .inp { outline: none; }
         .toast { animation: toastin .2s ease; }
         .chips::-webkit-scrollbar { display: none; }
+        .app-shell { height: 100vh; height: 100dvh; }
         button { -webkit-tap-highlight-color: transparent; }
         @media (prefers-reduced-motion: reduce) { .tapbtn:active { animation: none; } .toast { animation: none; } }
       `}</style>
 
-      <div className="max-w-md mx-auto px-4" style={{ paddingBottom: `calc(150px + ${SAFE_BOTTOM})` }}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
+      <div className="max-w-md mx-auto px-4" style={{ paddingBottom: 72 }}>
         {/* Cabecera */}
         <div ref={headerRef} className="pt-4 pb-2">
           <div className="rounded-2xl px-5 pt-4 pb-4 shadow-md" style={{ background: HEADER_GRAD, color: "#fff" }}>
@@ -946,7 +955,7 @@ export default function InventarioNespresso() {
                           <button onClick={() => toggleReviewed(cat.id, model.name)}
                             className="linkbtn w-full mt-2 rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
                             style={{ background: cat.soft, color: cat.accentDeep }}>
-                            <Check size={17} /> Listo, marcar {model.name} como revisado
+                            <Check size={17} className="flex-shrink-0" /> Listo, marcar como revisado
                           </button>
                         )}
                       </div>
@@ -1006,6 +1015,7 @@ export default function InventarioNespresso() {
           </div>
         </div>
       </div>
+      </div>
 
       {/* Aviso de deshacer */}
       {undo && (
@@ -1023,7 +1033,7 @@ export default function InventarioNespresso() {
       )}
 
       {/* Barra inferior */}
-      <div className="fixed bottom-0 left-0 right-0 z-20" style={{ background: PAPER, borderTop: `1px solid ${LINE}`, paddingBottom: SAFE_BOTTOM }}>
+      <div className="flex-shrink-0 z-20" style={{ background: PAPER, borderTop: `1px solid ${LINE}`, paddingBottom: SAFE_BOTTOM }}>
         <div className="max-w-md mx-auto px-4 py-3 flex gap-3">
           <button onClick={() => { setUndo(null); setShowSummary(true); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm" style={{ background: INK, color: "#fff" }}>
             <ClipboardList size={17} /> Resumen para GESIMO
