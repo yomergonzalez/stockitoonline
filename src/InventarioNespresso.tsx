@@ -331,6 +331,9 @@ export default function InventarioNespresso() {
   const saveToHistory = () => {
     remember("Conteo guardado en el historial");
     persistHistory([makeHistoryEntry(), ...history].slice(0, HISTORY_MAX));
+    // al guardar se empieza una nueva ronda de revisión
+    persist(counts, extras, {});
+    setCollapsed({});
     setHistDone(true); setTimeout(() => setHistDone(false), 2500);
   };
   const removeHistoryEntry = (id) => {
@@ -1070,7 +1073,7 @@ export default function InventarioNespresso() {
                   {imgDone ? "Lista" : "Imagen"}
                 </button>
               </div>
-              <p className="text-[11px] mt-2 text-center" style={{ color: MUTED }}>Guardar lo añade al historial · WhatsApp, Copiar e Imagen envían el resumen completo.</p>
+              <p className="text-[11px] mt-2 text-center" style={{ color: MUTED }}>Guardar lo añade al historial y reinicia los revisados · WhatsApp, Copiar e Imagen envían el resumen completo.</p>
             </div>
           </div>
         </div>
