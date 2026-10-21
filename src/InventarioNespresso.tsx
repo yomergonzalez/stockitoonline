@@ -156,7 +156,7 @@ function Swatch({ name }) {
   const premium = /premium/i.test(name);
   return (
     <span aria-hidden="true" className="inline-block rounded-full flex-shrink-0"
-      style={{ width: 14, height: 14, background: c, boxShadow: premium ? "0 0 0 1.5px #C9A45C" : "inset 0 0 0 1px rgba(0,0,0,0.14)" }} />
+      style={{ width: 14, height: 14, background: c, boxShadow: premium ? "0 0 0 1.5px #C9A45C" : "inset 0 0 0 1.5px rgba(0,0,0,0.28)" }} />
   );
 }
 
@@ -448,7 +448,16 @@ export default function InventarioNespresso() {
     const next = { ...reviewed };
     if (on) next[key] = true; else delete next[key];
     persist(counts, extras, next);
-    setCollapsed((c) => ({ ...c, [key]: on }));
+    const order = CATEGORIES.flatMap((c) => c.models.map((m) => reviewKey(c.id, m.name)));
+    const nextKey = on ? order.slice(order.indexOf(key) + 1).find((k) => !next[k]) : null;
+    setCollapsed((c) => ({ ...c, [key]: on, ...(nextKey ? { [nextKey]: false } : {}) }));
+    if (nextKey) {
+      // lista guiada: al marcar uno, la pantalla baja al siguiente sin revisar
+      setTimeout(() => {
+        const el = document.getElementById(`card-${nextKey}`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
+    }
     buzz();
   };
   const toggleCollapsed = (catId, mName) => {
@@ -785,7 +794,7 @@ export default function InventarioNespresso() {
       </button>
     );
 
-  const renderStepper = ({ id, value, label, onMinus, onPlus, apply, grad }) => (
+  const renderStepper = ({ id, value, label, onMinus, onPlus, apply, grad, soft, deep }) => (
     <div className="flex items-center gap-1">
       <button aria-label={`Restar ${label}`} onClick={onMinus} disabled={!value}
         className="tapbtn rounded-full flex items-center justify-center"
@@ -794,14 +803,14 @@ export default function InventarioNespresso() {
       </button>
       {renderValue(id, value, apply, label)}
       <button aria-label={`Sumar ${label}`} onClick={onPlus}
-        className="tapbtn rounded-full flex items-center justify-center shadow-sm"
-        style={{ width: 42, height: 42, background: grad, color: "#fff" }}>
-        <Plus size={18} />
+        className={`tapbtn rounded-full flex items-center justify-center${value ? " shadow-sm" : ""}`}
+        style={{ width: 42, height: 42, background: value ? grad : soft, color: value ? "#fff" : deep }}>
+        <Plus size={18} strokeWidth={2.5} />
       </button>
     </div>
   );
 
-  const renderCounter = (catId, mName, bId, k, grad) => {
+  const renderCounter = (catId, mName, bId, k, cat) => {
     const value = counts[catId][mName][bId][k] || 0;
     return renderStepper({
       id: `${catId}|${mName}|${bId}|${k}`,
@@ -810,7 +819,9 @@ export default function InventarioNespresso() {
       onMinus: () => bump(catId, mName, bId, k, -1),
       onPlus: () => bump(catId, mName, bId, k, 1),
       apply: (v) => setCount(catId, mName, bId, k, v),
-      grad,
+      grad: cat.grad,
+      soft: cat.soft,
+      deep: cat.accentDeep,
     });
   };
 
@@ -961,8 +972,8 @@ export default function InventarioNespresso() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
       <div className="max-w-md mx-auto px-4" style={{ paddingBottom: 72 }}>
         {/* Cabecera */}
-        <div ref={headerRef} className="pt-4 pb-2">
-          <div className="rounded-2xl px-5 pt-4 pb-4 shadow-md" style={{ background: HEADER_GRAD, color: "#fff" }}>
+        <div ref={headerRef} className="pt-3 pb-1">
+          <div className="rounded-2xl px-4 pt-3 pb-3 shadow-md" style={{ background: HEADER_GRAD, color: "#fff" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Coffee size={18} />
@@ -974,27 +985,22 @@ export default function InventarioNespresso() {
                 <User size={13} className="flex-shrink-0" /> <span className="truncate">{nick || "Elegir apodo"}</span>
               </button>
             </div>
-            <div className="flex items-end justify-between mt-2">
-              <div className="leading-none font-bold" style={{ fontSize: "3rem", fontVariantNumeric: "tabular-nums" }}>{grandTotal}</div>
-              <div className="text-right pb-1">
-                {CATEGORIES.map((c) => (
-                  <div key={c.id} className="text-xs" style={{ opacity: 0.95 }}>
-                    <span style={{ fontWeight: 700 }}>{c.name}</span>{" "}
-                    <span style={{ fontVariantNumeric: "tabular-nums" }}>{catTotal(c)}</span>
-                  </div>
-                ))}
+            <div className="flex items-end justify-between mt-2 gap-3">
+              <div>
+                <div className="leading-none font-bold" style={{ fontSize: "2rem", fontVariantNumeric: "tabular-nums" }}>
+                  {reviewedCount}<span style={{ fontSize: "1.1rem", opacity: 0.75 }}>/{MODEL_COUNT}</span>
+                </div>
+                <div className="text-xs mt-1" style={{ opacity: 0.9 }}>modelos revisados</div>
+              </div>
+              <div className="text-right">
+                <div className="leading-none font-bold" style={{ fontSize: "1.25rem", fontVariantNumeric: "tabular-nums" }}>{grandTotal}</div>
+                <div className="text-xs mt-1" style={{ opacity: 0.9 }}>máquinas</div>
               </div>
             </div>
-            <div className="text-xs mt-1" style={{ opacity: 0.85 }}>máquinas en total · {shortToday}{savedTime ? ` · guardado ${savedTime}` : ""}</div>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs mb-1" style={{ opacity: 0.95 }}>
-                <span className="flex items-center gap-1"><CircleCheck size={13} /> Modelos revisados</span>
-                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{reviewedCount}/{MODEL_COUNT}</span>
-              </div>
-              <div className="rounded-full overflow-hidden" style={{ height: 6, background: "rgba(255,255,255,0.28)" }}>
-                <div className="rounded-full" style={{ height: "100%", width: `${(reviewedCount / MODEL_COUNT) * 100}%`, background: "#fff", transition: "width .25s ease" }} />
-              </div>
+            <div className="rounded-full overflow-hidden mt-2" style={{ height: 6, background: "rgba(255,255,255,0.28)" }}>
+              <div className="rounded-full" style={{ height: "100%", width: `${(reviewedCount / MODEL_COUNT) * 100}%`, background: "#fff", transition: "width .25s ease" }} />
             </div>
+            <div className="text-[11px] mt-1.5" style={{ opacity: 0.8 }}>{shortToday}{savedTime ? ` · guardado ${savedTime}` : ""}</div>
           </div>
         </div>
 
@@ -1015,8 +1021,8 @@ export default function InventarioNespresso() {
               })}
             </div>
             <div className="text-right flex-shrink-0" style={{ opacity: scrolled ? 1 : 0, transition: "opacity .2s ease" }} aria-hidden={!scrolled}>
-              <div className="font-bold leading-none" style={{ fontSize: 20, fontVariantNumeric: "tabular-nums" }}>{grandTotal}</div>
-              <div style={{ fontSize: 10, color: MUTED, fontVariantNumeric: "tabular-nums" }}>{reviewedCount}/{MODEL_COUNT} ✓</div>
+              <div className="font-bold leading-none" style={{ fontSize: 18, fontVariantNumeric: "tabular-nums" }}>{reviewedCount}/{MODEL_COUNT} ✓</div>
+              <div style={{ fontSize: 10, color: MUTED, fontVariantNumeric: "tabular-nums" }}>{grandTotal} máquinas</div>
             </div>
           </div>
         </div>
@@ -1029,7 +1035,6 @@ export default function InventarioNespresso() {
                 <span className="text-sm font-bold uppercase" style={{ letterSpacing: "0.12em", color: cat.accent }}>{cat.name}</span>
                 <span className="rounded-full" style={{ width: 26, height: 4, background: cat.grad }} />
               </div>
-              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full" style={{ background: cat.soft, color: cat.accentDeep, fontVariantNumeric: "tabular-nums" }}>{catTotal(cat)}</span>
             </div>
 
             <div className="space-y-3">
@@ -1039,7 +1044,7 @@ export default function InventarioNespresso() {
                 const isCollapsed = !!collapsed[key];
                 const t = modelTotal(cat.id, model);
                 return (
-                  <div key={model.name} style={{ background: SURFACE, border: `1px solid ${isReviewed ? cat.accent : LINE}` }} className="rounded-2xl px-4 pt-2 pb-2 shadow-sm">
+                  <div key={model.name} id={`card-${key}`} style={{ background: SURFACE, border: `1px solid ${isReviewed ? cat.accent : LINE}`, scrollMarginTop: 60 }} className="rounded-2xl px-4 pt-2 pb-2 shadow-sm">
                     <div className="flex items-center gap-2">
                       <button onClick={() => toggleCollapsed(cat.id, model.name)} aria-expanded={!isCollapsed}
                         className="linkbtn flex-1 flex items-center gap-1.5 py-1.5 text-left min-w-0" style={{ background: "transparent", color: INK }}>
@@ -1050,13 +1055,14 @@ export default function InventarioNespresso() {
                         {t}
                       </span>
                       <button onClick={() => toggleReviewed(cat.id, model.name)}
-                        aria-label={isReviewed ? `Quitar revisado de ${model.name}` : `Marcar ${model.name} como revisado`} aria-pressed={isReviewed}
-                        className="tapbtn rounded-full flex items-center gap-1 pl-2 pr-2.5 py-1 text-xs font-bold flex-shrink-0"
-                        style={isReviewed
-                          ? { background: cat.accent, color: "#fff", border: `1.5px solid ${cat.accent}` }
-                          : { background: "#fff", color: MUTED, border: `1.5px dashed #C9C1B6` }}>
-                        {isReviewed ? <CircleCheck size={16} /> : <Circle size={16} />}
-                        {isReviewed ? "Revisado" : "Revisar"}
+                        role="checkbox" aria-checked={isReviewed} aria-label={`${model.name} revisado`}
+                        className="tapbtn flex items-center gap-1.5 px-1 py-1 text-xs font-bold flex-shrink-0"
+                        style={{ background: "transparent", color: isReviewed ? cat.accentDeep : MUTED }}>
+                        <span className="flex items-center justify-center rounded-md"
+                          style={{ width: 22, height: 22, border: `2px solid ${isReviewed ? cat.accent : "#B9B0A4"}`, background: isReviewed ? cat.accent : "#fff" }}>
+                          {isReviewed && <Check size={15} color="#fff" strokeWidth={3} />}
+                        </span>
+                        Revisado
                       </button>
                     </div>
 
@@ -1074,9 +1080,10 @@ export default function InventarioNespresso() {
                           const single = keys.length === 1 && keys[0] === "";
                           if (single) {
                             return (
-                              <div key={b.id} className="flex items-center justify-between py-1.5">
-                                <span className="text-sm" style={{ color: MUTED }}>{b.label}</span>
-                                {renderCounter(cat.id, model.name, b.id, "", cat.grad)}
+                              <div key={b.id} className="flex items-center justify-between py-1 -mx-2 px-2 rounded-xl"
+                                style={{ background: counts[cat.id][model.name][b.id][""] ? `${cat.soft}99` : "transparent" }}>
+                                <span className="text-sm" style={counts[cat.id][model.name][b.id][""] ? { color: INK, fontWeight: 600 } : { color: MUTED }}>{b.label}</span>
+                                {renderCounter(cat.id, model.name, b.id, "", cat)}
                               </div>
                             );
                           }
@@ -1086,12 +1093,15 @@ export default function InventarioNespresso() {
                                 <span className="text-xs font-bold uppercase" style={{ letterSpacing: "0.06em", color: MUTED }}>{b.label}</span>
                                 <span className="text-xs" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{brandTotal(cat.id, model, b.id)}</span>
                               </div>
-                              {keys.map((k) => (
-                                <div key={k} className="flex items-center justify-between py-1">
-                                  <span className="text-sm flex items-center gap-2"><Swatch name={k} />{k}</span>
-                                  {renderCounter(cat.id, model.name, b.id, k, cat.grad)}
-                                </div>
-                              ))}
+                              {keys.map((k) => {
+                                const has = !!counts[cat.id][model.name][b.id][k];
+                                return (
+                                  <div key={k} className="flex items-center justify-between py-1 -mx-2 px-2 rounded-xl" style={{ background: has ? `${cat.soft}99` : "transparent" }}>
+                                    <span className="text-sm flex items-center gap-2" style={{ fontWeight: has ? 600 : 400 }}><Swatch name={k} />{k}</span>
+                                    {renderCounter(cat.id, model.name, b.id, k, cat)}
+                                  </div>
+                                );
+                              })}
                             </div>
                           );
                         })}
@@ -1119,9 +1129,6 @@ export default function InventarioNespresso() {
               <span className="text-sm font-bold uppercase" style={{ letterSpacing: "0.12em", color: EXTRA.accent }}>Otros productos</span>
               <span className="rounded-full" style={{ width: 26, height: 4, background: EXTRA.grad }} />
             </div>
-            {extras.length > 0 && (
-              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full" style={{ background: EXTRA.soft, color: EXTRA.accentDeep, fontVariantNumeric: "tabular-nums" }}>{extrasTotal}</span>
-            )}
           </div>
 
           {extras.length === 0 && !addingExtra && (
@@ -1130,7 +1137,7 @@ export default function InventarioNespresso() {
 
           <div className="space-y-3">
             {extras.map((e) => (
-              <div key={e.name} style={{ background: SURFACE, border: `1px solid ${LINE}` }} className="rounded-2xl px-4 py-3 shadow-sm flex items-center justify-between gap-3">
+              <div key={e.name} style={{ background: e.qty ? EXTRA.soft : SURFACE, border: `1px solid ${e.qty ? EXTRA.accent : LINE}` }} className="rounded-2xl px-4 py-3 shadow-sm flex items-center justify-between gap-3">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span className="font-semibold text-[15px] truncate">{e.name}</span>
                   <button aria-label={`Quitar ${e.name}`} onClick={() => setRemoveExtraName(e.name)} className="linkbtn p-1 rounded-full flex-shrink-0" style={{ color: MUTED }}><Trash2 size={15} /></button>
@@ -1144,6 +1151,8 @@ export default function InventarioNespresso() {
                     onPlus: () => bumpExtra(e.name, 1),
                     apply: (v) => setExtraQty(e.name, v),
                     grad: EXTRA.grad,
+                    soft: EXTRA.soft,
+                    deep: EXTRA.accentDeep,
                   })}
                 </div>
               </div>
@@ -1182,11 +1191,11 @@ export default function InventarioNespresso() {
           <button onClick={() => { setUndo(null); setShowSummary(true); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm" style={{ background: INK, color: "#fff" }}>
             <ClipboardList size={17} /> Resumen para GESIMO
           </button>
-          <button onClick={() => { setUndo(null); setShowHistory(true); syncNow(); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
-            <History size={18} />
+          <button onClick={() => { setUndo(null); setShowHistory(true); syncNow(); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-2 flex flex-col items-center justify-center gap-0.5" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK, minWidth: 66 }}>
+            <History size={18} /><span className="text-[10px] font-semibold">Historial</span>
           </button>
-          <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
-            <RotateCcw size={18} />
+          <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-2 flex flex-col items-center justify-center gap-0.5" style={{ background: "transparent", border: `1px dashed ${LINE}`, color: "#A8445F", minWidth: 66 }}>
+            <RotateCcw size={18} /><span className="text-[10px] font-semibold">Reiniciar</span>
           </button>
         </div>
       </div>
