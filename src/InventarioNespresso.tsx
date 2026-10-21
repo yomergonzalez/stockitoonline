@@ -895,9 +895,12 @@ export default function InventarioNespresso() {
                       </span>
                       <button onClick={() => toggleReviewed(cat.id, model.name)}
                         aria-label={isReviewed ? `Quitar revisado de ${model.name}` : `Marcar ${model.name} como revisado`} aria-pressed={isReviewed}
-                        className="tapbtn rounded-full flex items-center justify-center flex-shrink-0"
-                        style={{ width: 36, height: 36, color: isReviewed ? cat.accent : "#C9C1B6", background: "transparent" }}>
-                        {isReviewed ? <CircleCheck size={24} /> : <Circle size={24} />}
+                        className="tapbtn rounded-full flex items-center gap-1 pl-2 pr-2.5 py-1 text-xs font-bold flex-shrink-0"
+                        style={isReviewed
+                          ? { background: cat.accent, color: "#fff", border: `1.5px solid ${cat.accent}` }
+                          : { background: "#fff", color: MUTED, border: `1.5px dashed #C9C1B6` }}>
+                        {isReviewed ? <CircleCheck size={16} /> : <Circle size={16} />}
+                        {isReviewed ? "Revisado" : "Revisar"}
                       </button>
                     </div>
 
@@ -936,6 +939,13 @@ export default function InventarioNespresso() {
                             </div>
                           );
                         })}
+                        {!isReviewed && (
+                          <button onClick={() => toggleReviewed(cat.id, model.name)}
+                            className="linkbtn w-full mt-2 rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                            style={{ background: cat.soft, color: cat.accentDeep }}>
+                            <Check size={17} /> Listo, marcar {model.name} como revisado
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
