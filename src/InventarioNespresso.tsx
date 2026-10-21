@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon, ChevronDown, History, Undo2, CircleCheck, Circle, EyeOff, User, Cloud, CloudOff } from "lucide-react";
+import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon, ChevronDown, History, Undo2, CircleCheck, Circle, EyeOff, User, Cloud, CloudOff, Save } from "lucide-react";
 
 /* ── Estructura real: modelo → marca → colores ─────────────── */
 const ORIGINAL_MODELS = [
@@ -159,6 +159,16 @@ function Swatch({ name }) {
       style={{ width: 14, height: 14, background: c, boxShadow: premium ? "0 0 0 1.5px #C9A45C" : "inset 0 0 0 1.5px rgba(0,0,0,0.28)" }} />
   );
 }
+
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+const dayLabel = (iso) => {
+  const d = new Date(iso);
+  const today = new Date();
+  const yest = new Date(); yest.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Hoy";
+  if (d.toDateString() === yest.toDateString()) return "Ayer";
+  return d.toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" });
+};
 
 const fmtDateTime = (iso) =>
   new Date(iso).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -476,11 +486,24 @@ export default function InventarioNespresso() {
     cats: Object.fromEntries(CATEGORIES.map((c) => [c.id, catTotal(c)])),
     extrasTotal,
   });
+  const MERGE_MS = 15 * 60 * 1000;
+  /* guarda el conteo: si no cambió nada no duplica, y si el último es de hace
+     menos de 15 min lo actualiza en vez de crear otro */
   const saveToHistory = () => {
-    const entry = makeHistoryEntry();
-    remember("Conteo guardado en el historial", entry.id);
-    persistHistory([entry, ...historyRef.current].slice(0, HISTORY_MAX));
-    syncNow();
+    const key = nickKey(nickRef.current);
+    const mine = historyRef.current.filter((h) => !h.deleted && nickKey(h.nick) === key);
+    const last = mine.reduce((m, h) => (!m || String(h.at) > String(m.at) ? h : m), null);
+    const same = last && JSON.stringify(linesOf(last.counts, last.extras)) === JSON.stringify(linesOf(counts, extras));
+    remember("Conteo guardado en el historial");
+    if (!same) {
+      const fresh = makeHistoryEntry();
+      if (last && Date.now() - new Date(last.at).getTime() < MERGE_MS) {
+        persistHistory(historyRef.current.map((h) => (h === last ? { ...fresh, id: last.id } : h)));
+      } else {
+        persistHistory([fresh, ...historyRef.current].slice(0, HISTORY_MAX));
+      }
+      syncNow();
+    }
     // al guardar se empieza una nueva ronda de revisión
     persist(counts, extras, {});
     setCollapsed({});
@@ -717,6 +740,7 @@ export default function InventarioNespresso() {
   };
 
   const shareImage = async () => {
+    saveToHistory();
     const blob = await makeInventoryImage();
     if (!blob) return;
     const filename = `inventario-${new Date().toISOString().slice(0, 10)}.png`;
@@ -740,6 +764,7 @@ export default function InventarioNespresso() {
   const waUrl = `https://wa.me/?text=${encodeURIComponent(buildWhatsAppText())}`;
 
   const copySummary = async () => {
+    saveToHistory();
     try {
       await navigator.clipboard.writeText(buildPlainText());
       setCopied(true);
@@ -828,10 +853,10 @@ export default function InventarioNespresso() {
   /* texto con negrita en lo que tiene unidades: "Krups: Blanca 3 · Negra 0" */
   const valIn = (c, catId, mName, bId, k) => Number(c?.[catId]?.[mName]?.[bId]?.[k]) || 0;
   const brandTotalIn = (c, catId, model, bId) => (keysFor(model, bId) || []).reduce((s, k) => s + valIn(c, catId, model.name, bId, k), 0);
-  const renderBrandParts = (c, catId, model, bId, skipZeros) => {
+  const renderBrandParts = (c, catId, model, bId, skipZeros, base = null) => {
     const keys = keysFor(model, bId);
     const label = brandLabel(bId);
-    const shown = keys.filter((k) => !skipZeros || valIn(c, catId, model.name, bId, k));
+    const shown = keys.filter((k) => !skipZeros || valIn(c, catId, model.name, bId, k) || (base && valIn(base, catId, model.name, bId, k)));
     return (
       <>
         <span>{label}{keys[0] === "" ? " " : ": "}</span>
@@ -842,6 +867,7 @@ export default function InventarioNespresso() {
               {i > 0 && " · "}
               {k && `${k} `}
               {v ? <b style={{ color: INK }}>{v}</b> : <span>{v}</span>}
+              {base && <Diff now={v} before={valIn(base, catId, model.name, bId, k)} />}
             </span>
           );
         })}
@@ -853,25 +879,34 @@ export default function InventarioNespresso() {
     const d = now - before;
     if (!d) return null;
     return (
-      <span className="text-xs font-semibold ml-1.5" style={{ color: d > 0 ? "#138A72" : "#C42E63", fontVariantNumeric: "tabular-nums" }}>
+      <span className="text-xs font-semibold ml-1.5" style={{ color: "#7A6A58", fontVariantNumeric: "tabular-nums" }}>
         {d > 0 ? `+${d}` : `−${-d}`}
       </span>
     );
   };
 
   /* fila "comparado con…" + botón Ocultar ceros (resumen e historial) */
-  const renderCompareBar = (base) => (
-    <div className="px-5 pt-3 flex items-center justify-between gap-3">
-      <span className="text-xs" style={{ color: MUTED }}>
-        {base ? <>Diferencias vs. conteo del <b>{fmtDateTime(base.at)}</b></> : "Sin conteo anterior para comparar"}
-      </span>
-      <button onClick={() => setHideZeros((v) => !v)} aria-pressed={hideZeros}
-        className="linkbtn rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 flex-shrink-0"
-        style={{ background: hideZeros ? INK : "#fff", color: hideZeros ? "#fff" : INK, border: `1px solid ${hideZeros ? INK : LINE}` }}>
-        <EyeOff size={14} /> Ocultar ceros
-      </button>
-    </div>
-  );
+  const renderCompareBar = (base, c, ex) => {
+    const changed = base && JSON.stringify(linesOf(base.counts, base.extras)) !== JSON.stringify(linesOf(c, ex));
+    return (
+      <div className="px-5 pt-3 flex items-center justify-between gap-3">
+        <span className="text-xs" style={{ color: MUTED }}>
+          {!base && "Sin conteo anterior para comparar"}
+          {base && !changed && <>Sin cambios desde el <b>{fmtDateTime(base.at)}</b></>}
+          {base && changed && <>Cambios desde el <b>{fmtDateTime(base.at)}</b></>}
+        </span>
+        <div role="group" aria-label="Qué mostrar" className="flex rounded-full p-0.5 flex-shrink-0" style={{ background: "#EAE3D8" }}>
+          {[["Todos", false], ["Con stock", true]].map(([label, val]) => (
+            <button key={label} onClick={() => setHideZeros(val)} aria-pressed={hideZeros === val}
+              className="linkbtn rounded-full px-3 py-1 text-xs font-semibold"
+              style={hideZeros === val ? { background: "#fff", color: INK, boxShadow: "0 1px 2px rgba(0,0,0,0.12)" } : { background: "transparent", color: MUTED }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   /* cuerpo del resumen para un conteo cualquiera (actual o del historial) */
   const renderSummaryBody = (c, ex, base) => {
@@ -914,7 +949,7 @@ export default function InventarioNespresso() {
                         <span><b style={{ color: t ? cat.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{t}</b>{diff}</span>
                       </div>
                       {brands.map((b) => (
-                        <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{renderBrandParts(c, cat.id, model, b.id, hideZeros)}</div>
+                        <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{renderBrandParts(c, cat.id, model, b.id, hideZeros, base && base.counts)}</div>
                       ))}
                     </div>
                   );
@@ -1021,8 +1056,10 @@ export default function InventarioNespresso() {
               })}
             </div>
             <div className="text-right flex-shrink-0" style={{ opacity: scrolled ? 1 : 0, transition: "opacity .2s ease" }} aria-hidden={!scrolled}>
-              <div className="font-bold leading-none" style={{ fontSize: 18, fontVariantNumeric: "tabular-nums" }}>{reviewedCount}/{MODEL_COUNT} ✓</div>
-              <div style={{ fontSize: 10, color: MUTED, fontVariantNumeric: "tabular-nums" }}>{grandTotal} máquinas</div>
+              <div className="font-bold leading-none" style={{ fontSize: 18, fontVariantNumeric: "tabular-nums", color: reviewedCount === MODEL_COUNT ? "#138A72" : INK }}>
+                {reviewedCount}/{MODEL_COUNT}{reviewedCount === MODEL_COUNT ? " ✓" : ""}
+              </div>
+              <div style={{ fontSize: 10, color: MUTED, fontVariantNumeric: "tabular-nums" }}>revisados · {grandTotal} máq.</div>
             </div>
           </div>
         </div>
@@ -1051,9 +1088,11 @@ export default function InventarioNespresso() {
                         <ChevronDown size={18} style={{ color: MUTED, transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .15s ease", flexShrink: 0 }} />
                         <span className="font-semibold text-[15px] truncate">{model.name}</span>
                       </button>
-                      <span className="text-sm font-bold px-2 py-0.5 rounded-full" style={{ background: t ? cat.soft : "transparent", color: t ? cat.accentDeep : MUTED, fontVariantNumeric: "tabular-nums", minWidth: 26, textAlign: "center" }}>
-                        {t}
-                      </span>
+                      {t > 0 && (
+                        <span className="text-sm font-bold px-2 py-0.5 rounded-full" style={{ background: cat.soft, color: cat.accentDeep, fontVariantNumeric: "tabular-nums", minWidth: 26, textAlign: "center" }}>
+                          {t}
+                        </span>
+                      )}
                       <button onClick={() => toggleReviewed(cat.id, model.name)}
                         role="checkbox" aria-checked={isReviewed} aria-label={`${model.name} revisado`}
                         className="tapbtn flex items-center gap-1.5 px-1 py-1 text-xs font-bold flex-shrink-0"
@@ -1091,7 +1130,7 @@ export default function InventarioNespresso() {
                             <div key={b.id} className="mt-2">
                               <div className="flex items-center justify-between mb-0.5">
                                 <span className="text-xs font-bold uppercase" style={{ letterSpacing: "0.06em", color: MUTED }}>{b.label}</span>
-                                <span className="text-xs" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{brandTotal(cat.id, model, b.id)}</span>
+                                {brandTotal(cat.id, model, b.id) > 0 && <span className="text-xs" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{brandTotal(cat.id, model, b.id)}</span>}
                               </div>
                               {keys.map((k) => {
                                 const has = !!counts[cat.id][model.name][b.id][k];
@@ -1194,7 +1233,7 @@ export default function InventarioNespresso() {
           <button onClick={() => { setUndo(null); setShowHistory(true); syncNow(); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-2 flex flex-col items-center justify-center gap-0.5" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK, minWidth: 66 }}>
             <History size={18} /><span className="text-[10px] font-semibold">Historial</span>
           </button>
-          <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-2 flex flex-col items-center justify-center gap-0.5" style={{ background: "transparent", border: `1px dashed ${LINE}`, color: "#A8445F", minWidth: 66 }}>
+          <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-2 flex flex-col items-center justify-center gap-0.5" style={{ background: "transparent", color: "#C42E63", minWidth: 66 }}>
             <RotateCcw size={18} /><span className="text-[10px] font-semibold">Reiniciar</span>
           </button>
         </div>
@@ -1213,30 +1252,31 @@ export default function InventarioNespresso() {
             </div>
 
             <div className="overflow-y-auto flex-1">
-              {renderCompareBar(lastEntry)}
+              {renderCompareBar(lastEntry, counts, extras)}
               {renderSummaryBody(counts, extras, lastEntry)}
             </div>
 
             {/* Acciones siempre a mano */}
             <div className="flex-shrink-0 px-4 pt-3" style={{ borderTop: `1px solid ${LINE}`, background: PAPER, paddingBottom: `calc(12px + ${SAFE_BOTTOM})` }}>
-              <div className="grid grid-cols-4 gap-2">
-                <button onClick={saveToHistory} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: INK, color: "#fff" }}>
-                  {histDone ? <Check size={20} /> : <History size={20} />}
-                  {histDone ? "Guardado" : "Guardar"}
-                </button>
-                <a href={waUrl} target="_blank" rel="noopener noreferrer" className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
-                  <Send size={20} /> WhatsApp
-                </a>
-                <button onClick={copySummary} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
-                  {copied ? <Check size={20} /> : <ClipboardList size={20} />}
-                  {copied ? "Copiado" : "Copiar"}
-                </button>
-                <button onClick={shareImage} className="linkbtn rounded-xl py-2 text-xs font-semibold flex flex-col items-center justify-center gap-1" style={{ background: HEADER_GRAD, color: "#fff" }}>
-                  {imgDone ? <Check size={20} /> : <ImageIcon size={20} />}
-                  {imgDone ? "Lista" : "Imagen"}
-                </button>
+              <a href={waUrl} target="_blank" rel="noopener noreferrer" onClick={saveToHistory}
+                className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm"
+                style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
+                <Send size={18} /> Enviar por WhatsApp
+              </a>
+              <div className="grid grid-cols-3 gap-2 mt-2">
+                {[
+                  { onClick: saveToHistory, done: histDone, icon: <Save size={18} />, label: "Guardar", doneLabel: "Guardado" },
+                  { onClick: copySummary, done: copied, icon: <ClipboardList size={18} />, label: "Copiar", doneLabel: "Copiado" },
+                  { onClick: shareImage, done: imgDone, icon: <ImageIcon size={18} />, label: "Imagen", doneLabel: "Lista" },
+                ].map((a) => (
+                  <button key={a.label} onClick={a.onClick}
+                    className="linkbtn rounded-xl py-2 text-xs font-semibold flex items-center justify-center gap-1.5"
+                    style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
+                    {a.done ? <Check size={18} /> : a.icon}
+                    {a.done ? a.doneLabel : a.label}
+                  </button>
+                ))}
               </div>
-              <p className="text-[11px] mt-2 text-center" style={{ color: MUTED }}>Guardar lo añade al historial y reinicia los revisados · WhatsApp, Copiar e Imagen envían el resumen completo.</p>
             </div>
           </div>
         </div>
@@ -1280,7 +1320,7 @@ export default function InventarioNespresso() {
 
               {entry ? (
                 <div style={{ paddingBottom: `calc(16px + ${SAFE_BOTTOM})` }}>
-                  {renderCompareBar(prev)}
+                  {renderCompareBar(prev, entry.counts, entry.extras || [])}
                   {renderSummaryBody(entry.counts, entry.extras || [], prev)}
                   <div className="px-5">
                     <button onClick={() => { removeHistoryEntry(entry.id); setOpenEntry(null); }} className="linkbtn w-full rounded-xl py-3 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: "#fff", border: `1px solid ${LINE}`, color: "#C42E63" }}>
@@ -1289,29 +1329,39 @@ export default function InventarioNespresso() {
                   </div>
                 </div>
               ) : (
-                <div className="px-5 py-4 space-y-3" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
+                <div className="px-5 py-4 space-y-2" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
                   {visibleHistory.length === 0 && (
-                    <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Usa "Guardar" en el resumen, o al reiniciar se guarda solo.</p>
+                    <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Se guardan solos al enviar el resumen o al reiniciar.</p>
                   )}
                   {visibleHistory.map((h, i) => {
                     const before = visibleHistory[i + 1];
+                    const day = dayLabel(h.at);
+                    const newDay = i === 0 || dayLabel(visibleHistory[i - 1].at) !== day;
+                    const d = before ? h.total - before.total : null;
                     return (
-                      <button key={h.id} onClick={() => setOpenEntry(h.id)}
-                        className="linkbtn w-full text-left rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3"
-                        style={{ background: SURFACE, border: `1px solid ${LINE}`, color: INK }}>
-                        <span className="flex-1 min-w-0">
-                          <span className="block font-semibold text-sm">
-                            {fmtDateTime(h.at)}
-                            {SHEETS_URL && !h.synced && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: "#C9822A" }}>· pendiente de enviar</span>}
+                      <div key={h.id}>
+                        {newDay && <div className="text-xs font-bold uppercase px-1 pt-1 pb-2" style={{ color: MUTED, letterSpacing: "0.08em" }}>{day}</div>}
+                        <button onClick={() => setOpenEntry(h.id)}
+                          className="linkbtn w-full text-left rounded-2xl px-4 py-3 shadow-sm flex items-center gap-2"
+                          style={{ background: SURFACE, border: `1px solid ${LINE}`, color: INK }}>
+                          <span className="flex-1 min-w-0">
+                            <span className="flex items-center gap-2 font-semibold text-sm">
+                              <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmtTime(h.at)}</span>
+                              {SHEETS_URL && (h.synced
+                                ? <span className="text-[11px] font-semibold flex items-center gap-0.5" style={{ color: MUTED }}><Check size={12} /> en Sheets</span>
+                                : <span className="text-[11px] font-semibold" style={{ color: "#C9822A" }}>pendiente de enviar</span>)}
+                            </span>
+                            <span className="block text-xs" style={{ color: MUTED }}>
+                              {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? catTotalIn(h.counts, c)}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
+                            </span>
                           </span>
-                          <span className="block text-xs" style={{ color: MUTED }}>
-                            {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? catTotalIn(h.counts, c)}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
+                          <span className="font-bold text-lg text-right" style={{ fontVariantNumeric: "tabular-nums", minWidth: 36 }}>{h.total}</span>
+                          <span className="text-xs font-semibold text-right" style={{ fontVariantNumeric: "tabular-nums", width: 34, color: "#7A6A58" }}>
+                            {d === null ? "" : d === 0 ? "=" : d > 0 ? `+${d}` : `−${-d}`}
                           </span>
-                        </span>
-                        <span className="font-bold text-lg" style={{ fontVariantNumeric: "tabular-nums" }}>{h.total}</span>
-                        {before && <Diff now={h.total} before={before.total} />}
-                        <ChevronDown size={18} style={{ color: MUTED, transform: "rotate(-90deg)", flexShrink: 0 }} />
-                      </button>
+                          <ChevronDown size={18} style={{ color: MUTED, transform: "rotate(-90deg)", flexShrink: 0 }} />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
