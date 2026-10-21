@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon, ChevronDown, History, Undo2, CircleCheck, Circle, EyeOff } from "lucide-react";
 
 /* ── Estructura real: modelo → marca → colores ─────────────── */
 const ORIGINAL_MODELS = [
@@ -54,6 +54,8 @@ const EXTRA = {
 };
 
 const STORAGE_KEY = "conteo-actual";
+const HISTORY_KEY = "conteo-historial";
+const HISTORY_MAX = 30;
 const HEADER_GRAD = "linear-gradient(135deg,#E8842A 0%,#C42E63 100%)";
 
 const INK = "#241A16";
@@ -86,6 +88,43 @@ const buildCounts = (prev = {}) => {
   return c;
 };
 
+/* totales a partir de un objeto de conteos cualquiera (actual o del historial) */
+const modelTotalIn = (c, catId, model) =>
+  BRANDS.reduce((s, b) => {
+    const keys = keysFor(model, b.id);
+    if (!keys) return s;
+    return s + keys.reduce((t, k) => t + (Number(c?.[catId]?.[model.name]?.[b.id]?.[k]) || 0), 0);
+  }, 0);
+const catTotalIn = (c, cat) => cat.models.reduce((s, m) => s + modelTotalIn(c, cat.id, m), 0);
+
+const MODEL_COUNT = CATEGORIES.reduce((s, c) => s + c.models.length, 0);
+const reviewKey = (catId, mName) => `${catId}/${mName}`;
+
+/* muestra de color para cada nombre de color */
+const SWATCHES = {
+  "blanca": "#F7F5F0", "white": "#F7F5F0",
+  "negra": "#1E1C1B", "blk": "#1E1C1B",
+  "gris": "#8E8E93", "gris claro": "#C9CCD1", "gris oscuro": "#4F5359", "gris mate": "#7A7C80",
+  "negro mate": "#3A3838", "premium negro": "#2A2522",
+  "lima": "#B5D334", "roja": "#C8102E", "crema": "#EFE3C8", "mint": "#9FD8C4",
+  "azul": "#2B5BA8", "blue": "#2B5BA8", "mango": "#F4A62A",
+  "premium marrón": "#6B4430", "antracita": "#383E42",
+};
+const swatchFor = (name) => SWATCHES[String(name).toLowerCase()] || null;
+
+function Swatch({ name }) {
+  const c = swatchFor(name);
+  if (!c) return null;
+  const premium = /premium/i.test(name);
+  return (
+    <span aria-hidden="true" className="inline-block rounded-full flex-shrink-0"
+      style={{ width: 14, height: 14, background: c, boxShadow: premium ? "0 0 0 1.5px #C9A45C" : "inset 0 0 0 1px rgba(0,0,0,0.14)" }} />
+  );
+}
+
+const fmtDateTime = (iso) =>
+  new Date(iso).toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+
 const buzz = () => {
   try {
     if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(6);
@@ -113,15 +152,29 @@ function AddInput({ value, onChange, onCancel, onAdd, accent, grad, placeholder 
 export default function InventarioNespresso() {
   const [counts, setCounts] = useState(() => buildCounts());
   const [extras, setExtras] = useState([]);
+  const [reviewed, setReviewed] = useState({});
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savedAt, setSavedAt] = useState(null);
   const [showSummary, setShowSummary] = useState(false);
   const [showReset, setShowReset] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [openEntry, setOpenEntry] = useState(null);
   const [removeExtraName, setRemoveExtraName] = useState(null);
   const [addingExtra, setAddingExtra] = useState(false);
   const [newName, setNewName] = useState("");
   const [copied, setCopied] = useState(false);
   const [imgDone, setImgDone] = useState(false);
+  const [histDone, setHistDone] = useState(false);
+  const [hideZeros, setHideZeros] = useState(false);
+  const [collapsed, setCollapsed] = useState({});
+  const [editing, setEditing] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [undo, setUndo] = useState(null);
+  const [activeSec, setActiveSec] = useState("original");
+  const [scrolled, setScrolled] = useState(false);
+  const undoTimer = useRef(null);
+  const headerRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -132,38 +185,112 @@ export default function InventarioNespresso() {
             const p = JSON.parse(res.value);
             setCounts(buildCounts(p.counts || {}));
             setExtras(Array.isArray(p.extras) ? p.extras : []);
+            const rv = p.reviewed && typeof p.reviewed === "object" ? p.reviewed : {};
+            setReviewed(rv);
+            setCollapsed(rv);
             if (p.savedAt) setSavedAt(p.savedAt);
+          }
+          const h = await window.storage.get(HISTORY_KEY);
+          if (h && h.value) {
+            const arr = JSON.parse(h.value);
+            if (Array.isArray(arr)) setHistory(arr);
           }
         }
       } catch (e) {} finally { setLoading(false); }
     })();
   }, []);
 
-  const persist = (nextCounts, nextExtras) => {
+  /* sección activa en los accesos rápidos + total compacto al bajar */
+  useEffect(() => {
+    if (loading) return;
+    const onScroll = () => {
+      const hb = headerRef.current ? headerRef.current.getBoundingClientRect().bottom : 0;
+      setScrolled(hb < 0);
+      let cur = "original";
+      for (const id of ["original", "vertuo", "otros"]) {
+        const el = document.getElementById(`sec-${id}`);
+        if (el && el.getBoundingClientRect().top < 140) cur = id;
+      }
+      setActiveSec(cur);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [loading]);
+
+  const persist = (nextCounts, nextExtras, nextReviewed = reviewed) => {
     setCounts(nextCounts);
     setExtras(nextExtras);
+    setReviewed(nextReviewed);
     const stamp = new Date().toISOString();
     setSavedAt(stamp);
     (async () => {
       try {
         if (typeof window !== "undefined" && window.storage) {
-          await window.storage.set(STORAGE_KEY, JSON.stringify({ counts: nextCounts, extras: nextExtras, savedAt: stamp }));
+          await window.storage.set(STORAGE_KEY, JSON.stringify({ counts: nextCounts, extras: nextExtras, reviewed: nextReviewed, savedAt: stamp }));
         }
       } catch (e) {}
     })();
   };
 
-  const bump = (catId, mName, bId, k, delta) => {
+  const persistHistory = (next) => {
+    setHistory(next);
+    (async () => {
+      try {
+        if (typeof window !== "undefined" && window.storage) await window.storage.set(HISTORY_KEY, JSON.stringify(next));
+      } catch (e) {}
+    })();
+  };
+
+  /* guarda el estado anterior para poder deshacer el último cambio */
+  const remember = (label) => {
+    setUndo({ label, snap: { counts, extras, reviewed, history, collapsed } });
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndo(null), 5000);
+  };
+  const doUndo = () => {
+    if (!undo) return;
+    const { snap } = undo;
+    persist(snap.counts, snap.extras, snap.reviewed);
+    if (snap.history !== history) persistHistory(snap.history);
+    setCollapsed(snap.collapsed);
+    setUndo(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+  };
+
+  const brandLabel = (bId) => BRANDS.find((b) => b.id === bId).label;
+  const counterLabel = (mName, bId, k) => `${mName} · ${brandLabel(bId)}${k ? ` ${k}` : ""}`;
+
+  const setCount = (catId, mName, bId, k, value) => {
+    const v = Math.max(0, Math.floor(Number(value) || 0));
+    if ((counts[catId][mName][bId][k] || 0) === v) return;
+    remember(`${counterLabel(mName, bId, k)}: ${v}`);
     const next = JSON.parse(JSON.stringify(counts));
-    next[catId][mName][bId][k] = Math.max(0, (next[catId][mName][bId][k] || 0) + delta);
+    next[catId][mName][bId][k] = v;
     persist(next, extras);
+  };
+
+  const bump = (catId, mName, bId, k, delta) => {
+    const cur = counts[catId][mName][bId][k] || 0;
+    if (cur + delta < 0) return;
+    setCount(catId, mName, bId, k, cur + delta);
     buzz();
   };
 
   const bumpExtra = (name, delta) => {
-    const next = extras.map((e) => (e.name === name ? { ...e, qty: Math.max(0, e.qty + delta) } : e));
+    const cur = extras.find((e) => e.name === name);
+    if (!cur || cur.qty + delta < 0) return;
+    remember(`${name}: ${cur.qty + delta}`);
+    const next = extras.map((e) => (e.name === name ? { ...e, qty: e.qty + delta } : e));
     persist(counts, next);
     buzz();
+  };
+  const setExtraQty = (name, value) => {
+    const v = Math.max(0, Math.floor(Number(value) || 0));
+    const cur = extras.find((e) => e.name === name);
+    if (!cur || cur.qty === v) return;
+    remember(`${name}: ${v}`);
+    persist(counts, extras.map((e) => (e.name === name ? { ...e, qty: v } : e)));
   };
   const addExtra = () => {
     const name = newName.trim();
@@ -172,20 +299,64 @@ export default function InventarioNespresso() {
     }
     setNewName(""); setAddingExtra(false);
   };
-  const removeExtra = (name) => { persist(counts, extras.filter((e) => e.name !== name)); setRemoveExtraName(null); };
+  const removeExtra = (name) => {
+    remember(`"${name}" quitado`);
+    persist(counts, extras.filter((e) => e.name !== name));
+    setRemoveExtraName(null);
+  };
 
-  const doReset = () => { persist(buildCounts(), extras.map((e) => ({ ...e, qty: 0 }))); setShowReset(false); };
+  const toggleReviewed = (catId, mName) => {
+    const key = reviewKey(catId, mName);
+    const on = !reviewed[key];
+    const next = { ...reviewed };
+    if (on) next[key] = true; else delete next[key];
+    persist(counts, extras, next);
+    setCollapsed((c) => ({ ...c, [key]: on }));
+    buzz();
+  };
+  const toggleCollapsed = (catId, mName) => {
+    const key = reviewKey(catId, mName);
+    setCollapsed((c) => ({ ...c, [key]: !c[key] }));
+  };
+
+  const makeHistoryEntry = () => ({
+    id: Date.now(),
+    at: new Date().toISOString(),
+    counts,
+    extras,
+    total: grandTotal,
+    cats: Object.fromEntries(CATEGORIES.map((c) => [c.id, catTotal(c)])),
+    extrasTotal,
+  });
+  const saveToHistory = () => {
+    remember("Conteo guardado en el historial");
+    persistHistory([makeHistoryEntry(), ...history].slice(0, HISTORY_MAX));
+    setHistDone(true); setTimeout(() => setHistDone(false), 2500);
+  };
+  const removeHistoryEntry = (id) => {
+    remember("Conteo borrado del historial");
+    persistHistory(history.filter((h) => h.id !== id));
+  };
+
+  const doReset = () => {
+    remember("Conteo reiniciado");
+    if (grandTotal + extrasTotal > 0) persistHistory([makeHistoryEntry(), ...history].slice(0, HISTORY_MAX));
+    persist(buildCounts(), extras.map((e) => ({ ...e, qty: 0 })), {});
+    setCollapsed({});
+    setShowReset(false);
+  };
 
   const brandTotal = (catId, model, bId) => {
     const keys = keysFor(model, bId);
     if (!keys) return 0;
     return keys.reduce((s, k) => s + (counts[catId][model.name][bId][k] || 0), 0);
   };
-  const modelTotal = (catId, model) =>
-    BRANDS.reduce((s, b) => s + (keysFor(model, b.id) ? brandTotal(catId, model, b.id) : 0), 0);
-  const catTotal = (cat) => cat.models.reduce((s, m) => s + modelTotal(cat.id, m), 0);
+  const modelTotal = (catId, model) => modelTotalIn(counts, catId, model);
+  const catTotal = (cat) => catTotalIn(counts, cat);
   const grandTotal = CATEGORIES.reduce((s, c) => s + catTotal(c), 0);
   const extrasTotal = extras.reduce((s, e) => s + e.qty, 0);
+  const reviewedCount = Object.keys(reviewed).length;
+  const lastEntry = history[0] || null;
 
   const today = new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" });
   const savedTime = savedAt ? new Date(savedAt).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : null;
@@ -427,17 +598,52 @@ export default function InventarioNespresso() {
 
   const cancelAdd = () => { setAddingExtra(false); setNewName(""); };
 
-  const renderCounter = (catId, mName, bId, k, grad) => (
-    <div className="flex items-center gap-2">
-      <button aria-label="Restar" onClick={() => bump(catId, mName, bId, k, -1)}
+  const startEdit = (id, value) => { setEditing(id); setEditValue(String(value)); };
+  const commitEdit = (apply) => {
+    if (editing !== null && editValue.trim() !== "") apply(editValue);
+    setEditing(null);
+  };
+
+  const goTo = (id) => {
+    const el = document.getElementById(`sec-${id}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  /* número del contador: se toca para escribir la cantidad */
+  const renderValue = (id, value, apply, label) =>
+    editing === id ? (
+      <input
+        autoFocus
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        maxLength={4}
+        aria-label={`Cantidad de ${label}`}
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value.replace(/[^0-9]/g, ""))}
+        onFocus={(e) => e.target.select()}
+        onBlur={() => commitEdit(apply)}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditing(null); }}
+        className="inp text-xl font-bold text-center rounded-lg"
+        style={{ width: 52, height: 40, border: `1.5px solid ${INK}`, background: "#fff", color: INK, fontSize: 20, fontVariantNumeric: "tabular-nums" }}
+      />
+    ) : (
+      <button aria-label={`Escribir cantidad de ${label}`} onClick={() => startEdit(id, value)}
+        className="linkbtn text-xl font-bold text-center rounded-lg"
+        style={{ minWidth: 52, height: 40, fontVariantNumeric: "tabular-nums", color: value ? INK : MUTED, background: "transparent" }}>
+        {value}
+      </button>
+    );
+
+  const renderStepper = ({ id, value, label, onMinus, onPlus, apply, grad }) => (
+    <div className="flex items-center gap-1">
+      <button aria-label={`Restar ${label}`} onClick={onMinus} disabled={!value}
         className="tapbtn rounded-full flex items-center justify-center"
-        style={{ width: 42, height: 42, border: `1.5px solid ${LINE}`, background: "#fff", color: INK }}>
+        style={{ width: 42, height: 42, border: `1.5px solid ${LINE}`, background: "#fff", color: INK, opacity: value ? 1 : 0.35 }}>
         <Minus size={18} />
       </button>
-      <span className="text-xl font-bold text-center" style={{ minWidth: 28, fontVariantNumeric: "tabular-nums" }}>
-        {counts[catId][mName][bId][k] || 0}
-      </span>
-      <button aria-label="Sumar" onClick={() => bump(catId, mName, bId, k, 1)}
+      {renderValue(id, value, apply, label)}
+      <button aria-label={`Sumar ${label}`} onClick={onPlus}
         className="tapbtn rounded-full flex items-center justify-center shadow-sm"
         style={{ width: 42, height: 42, background: grad, color: "#fff" }}>
         <Plus size={18} />
@@ -445,19 +651,75 @@ export default function InventarioNespresso() {
     </div>
   );
 
+  const renderCounter = (catId, mName, bId, k, grad) => {
+    const value = counts[catId][mName][bId][k] || 0;
+    return renderStepper({
+      id: `${catId}|${mName}|${bId}|${k}`,
+      value,
+      label: counterLabel(mName, bId, k),
+      onMinus: () => bump(catId, mName, bId, k, -1),
+      onPlus: () => bump(catId, mName, bId, k, 1),
+      apply: (v) => setCount(catId, mName, bId, k, v),
+      grad,
+    });
+  };
+
+  /* texto con negrita en lo que tiene unidades: "Krups: Blanca 3 · Negra 0" */
+  const renderBrandParts = (catId, model, bId, accent, skipZeros) => {
+    const keys = keysFor(model, bId);
+    const label = brandLabel(bId);
+    const shown = keys.filter((k) => !skipZeros || counts[catId][model.name][bId][k]);
+    return (
+      <>
+        <span>{label}{keys[0] === "" ? " " : ": "}</span>
+        {shown.map((k, i) => {
+          const v = counts[catId][model.name][bId][k] || 0;
+          return (
+            <span key={k}>
+              {i > 0 && " · "}
+              {k && `${k} `}
+              {v ? <b style={{ color: accent }}>{v}</b> : <span>{v}</span>}
+            </span>
+          );
+        })}
+      </>
+    );
+  };
+
+  const Diff = ({ now, before }) => {
+    const d = now - before;
+    if (!d) return null;
+    return (
+      <span className="text-xs font-semibold ml-1.5" style={{ color: d > 0 ? "#138A72" : "#C42E63", fontVariantNumeric: "tabular-nums" }}>
+        {d > 0 ? `+${d}` : `−${-d}`}
+      </span>
+    );
+  };
+
+  const sections = [
+    ...CATEGORIES.map((c) => ({ id: c.id, name: c.name, total: catTotal(c), accent: c.accent, soft: c.soft, deep: c.accentDeep })),
+    { id: "otros", name: "Otros", total: extrasTotal, accent: EXTRA.accent, soft: EXTRA.soft, deep: EXTRA.accentDeep },
+  ];
+
+  const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
+
   return (
     <div style={{ background: PAPER, color: INK }} className="min-h-screen">
       <style>{`
         @keyframes pop { 0%{transform:scale(1)} 40%{transform:scale(.84)} 100%{transform:scale(1)} }
-        .tapbtn:active { animation: pop .18s ease; }
+        @keyframes toastin { from{transform:translateY(12px);opacity:0} to{transform:none;opacity:1} }
+        .tapbtn:active:not(:disabled) { animation: pop .18s ease; }
         .tapbtn:focus-visible, .linkbtn:focus-visible, .inp:focus-visible { outline: 2px solid ${INK}; outline-offset: 2px; }
         .inp { outline: none; }
-        @media (prefers-reduced-motion: reduce) { .tapbtn:active { animation: none; } }
+        .toast { animation: toastin .2s ease; }
+        .chips::-webkit-scrollbar { display: none; }
+        button { -webkit-tap-highlight-color: transparent; }
+        @media (prefers-reduced-motion: reduce) { .tapbtn:active { animation: none; } .toast { animation: none; } }
       `}</style>
 
-      <div className="max-w-md mx-auto px-4 pb-32">
+      <div className="max-w-md mx-auto px-4" style={{ paddingBottom: `calc(150px + ${SAFE_BOTTOM})` }}>
         {/* Cabecera */}
-        <div className="sticky top-0 z-10 pt-4 pb-3" style={{ background: PAPER }}>
+        <div ref={headerRef} className="pt-4 pb-2">
           <div className="rounded-2xl px-5 pt-4 pb-4 shadow-md" style={{ background: HEADER_GRAD, color: "#fff" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -478,12 +740,44 @@ export default function InventarioNespresso() {
               </div>
             </div>
             <div className="text-xs mt-1" style={{ opacity: 0.85 }}>máquinas en total{savedTime ? ` · guardado ${savedTime}` : ""}</div>
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-xs mb-1" style={{ opacity: 0.95 }}>
+                <span className="flex items-center gap-1"><CircleCheck size={13} /> Modelos revisados</span>
+                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{reviewedCount}/{MODEL_COUNT}</span>
+              </div>
+              <div className="rounded-full overflow-hidden" style={{ height: 6, background: "rgba(255,255,255,0.28)" }}>
+                <div className="rounded-full" style={{ height: "100%", width: `${(reviewedCount / MODEL_COUNT) * 100}%`, background: "#fff", transition: "width .25s ease" }} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Accesos rápidos (fijos arriba) */}
+        <div className="sticky top-0 z-10 -mx-4 px-4 py-2" style={{ background: PAPER, borderBottom: scrolled ? `1px solid ${LINE}` : "1px solid transparent" }}>
+          <div className="flex items-center gap-2">
+            <div className="chips flex gap-2 overflow-x-auto flex-1" style={{ scrollbarWidth: "none" }}>
+              {sections.map((sec) => {
+                const on = activeSec === sec.id;
+                return (
+                  <button key={sec.id} onClick={() => goTo(sec.id)}
+                    className="linkbtn rounded-full pl-3 pr-1.5 py-1.5 text-xs font-bold flex items-center gap-1.5 flex-shrink-0"
+                    style={{ background: on ? sec.accent : SURFACE, color: on ? "#fff" : sec.deep, border: `1px solid ${on ? sec.accent : LINE}` }}>
+                    {sec.name}
+                    <span className="rounded-full px-1.5" style={{ background: on ? "rgba(255,255,255,0.25)" : sec.soft, fontVariantNumeric: "tabular-nums", minWidth: 20, textAlign: "center" }}>{sec.total}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-right flex-shrink-0" style={{ opacity: scrolled ? 1 : 0, transition: "opacity .2s ease" }} aria-hidden={!scrolled}>
+              <div className="font-bold leading-none" style={{ fontSize: 20, fontVariantNumeric: "tabular-nums" }}>{grandTotal}</div>
+              <div style={{ fontSize: 10, color: MUTED, fontVariantNumeric: "tabular-nums" }}>{reviewedCount}/{MODEL_COUNT} ✓</div>
+            </div>
           </div>
         </div>
 
         {/* Categorías */}
         {CATEGORIES.map((cat) => (
-          <div key={cat.id} className="mb-7">
+          <div key={cat.id} id={`sec-${cat.id}`} className="mb-7 pt-3" style={{ scrollMarginTop: 52 }}>
             <div className="flex items-center justify-between mb-3 px-1">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold uppercase" style={{ letterSpacing: "0.12em", color: cat.accent }}>{cat.name}</span>
@@ -493,50 +787,76 @@ export default function InventarioNespresso() {
             </div>
 
             <div className="space-y-3">
-              {cat.models.map((model) => (
-                <div key={model.name} style={{ background: SURFACE, border: `1px solid ${LINE}` }} className="rounded-2xl px-4 pt-3 pb-3 shadow-sm">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-[15px]">{model.name}</span>
-                    <span className="text-sm font-bold px-2 py-0.5 rounded-full" style={{ background: modelTotal(cat.id, model) ? cat.soft : "transparent", color: modelTotal(cat.id, model) ? cat.accentDeep : MUTED, fontVariantNumeric: "tabular-nums", minWidth: 26, textAlign: "center" }}>
-                      {modelTotal(cat.id, model)}
-                    </span>
-                  </div>
+              {cat.models.map((model) => {
+                const key = reviewKey(cat.id, model.name);
+                const isReviewed = !!reviewed[key];
+                const isCollapsed = !!collapsed[key];
+                const t = modelTotal(cat.id, model);
+                return (
+                  <div key={model.name} style={{ background: SURFACE, border: `1px solid ${isReviewed ? cat.accent : LINE}` }} className="rounded-2xl px-4 pt-2 pb-2 shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => toggleCollapsed(cat.id, model.name)} aria-expanded={!isCollapsed}
+                        className="linkbtn flex-1 flex items-center gap-1.5 py-1.5 text-left min-w-0" style={{ background: "transparent", color: INK }}>
+                        <ChevronDown size={18} style={{ color: MUTED, transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .15s ease", flexShrink: 0 }} />
+                        <span className="font-semibold text-[15px] truncate">{model.name}</span>
+                      </button>
+                      <span className="text-sm font-bold px-2 py-0.5 rounded-full" style={{ background: t ? cat.soft : "transparent", color: t ? cat.accentDeep : MUTED, fontVariantNumeric: "tabular-nums", minWidth: 26, textAlign: "center" }}>
+                        {t}
+                      </span>
+                      <button onClick={() => toggleReviewed(cat.id, model.name)}
+                        aria-label={isReviewed ? `Quitar revisado de ${model.name}` : `Marcar ${model.name} como revisado`} aria-pressed={isReviewed}
+                        className="tapbtn rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ width: 36, height: 36, color: isReviewed ? cat.accent : "#C9C1B6", background: "transparent" }}>
+                        {isReviewed ? <CircleCheck size={24} /> : <Circle size={24} />}
+                      </button>
+                    </div>
 
-                  {BRANDS.map((b) => {
-                    const keys = keysFor(model, b.id);
-                    if (!keys) return null;
-                    const single = keys.length === 1 && keys[0] === "";
-                    if (single) {
-                      return (
-                        <div key={b.id} className="flex items-center justify-between py-1.5">
-                          <span className="text-sm" style={{ color: MUTED }}>{b.label}</span>
-                          {renderCounter(cat.id, model.name, b.id, "", cat.grad)}
-                        </div>
-                      );
-                    }
-                    return (
-                      <div key={b.id} className="mt-2">
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="text-xs font-bold uppercase" style={{ letterSpacing: "0.06em", color: MUTED }}>{b.label}</span>
-                          <span className="text-xs" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{brandTotal(cat.id, model, b.id)}</span>
-                        </div>
-                        {keys.map((k) => (
-                          <div key={k} className="flex items-center justify-between py-1">
-                            <span className="text-sm">{k}</span>
-                            {renderCounter(cat.id, model.name, b.id, k, cat.grad)}
-                          </div>
+                    {isCollapsed ? (
+                      <div className="text-xs pb-1.5 pl-6" style={{ color: MUTED }}>
+                        {modelBrands(model).map((b, i) => (
+                          <span key={b.id}>{i > 0 && "  ·  "}{b.label} <b style={{ color: brandTotal(cat.id, model, b.id) ? INK : MUTED }}>{brandTotal(cat.id, model, b.id)}</b></span>
                         ))}
                       </div>
-                    );
-                  })}
-                </div>
-              ))}
+                    ) : (
+                      <div className="pb-1">
+                        {BRANDS.map((b) => {
+                          const keys = keysFor(model, b.id);
+                          if (!keys) return null;
+                          const single = keys.length === 1 && keys[0] === "";
+                          if (single) {
+                            return (
+                              <div key={b.id} className="flex items-center justify-between py-1.5">
+                                <span className="text-sm" style={{ color: MUTED }}>{b.label}</span>
+                                {renderCounter(cat.id, model.name, b.id, "", cat.grad)}
+                              </div>
+                            );
+                          }
+                          return (
+                            <div key={b.id} className="mt-2">
+                              <div className="flex items-center justify-between mb-0.5">
+                                <span className="text-xs font-bold uppercase" style={{ letterSpacing: "0.06em", color: MUTED }}>{b.label}</span>
+                                <span className="text-xs" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{brandTotal(cat.id, model, b.id)}</span>
+                              </div>
+                              {keys.map((k) => (
+                                <div key={k} className="flex items-center justify-between py-1">
+                                  <span className="text-sm flex items-center gap-2"><Swatch name={k} />{k}</span>
+                                  {renderCounter(cat.id, model.name, b.id, k, cat.grad)}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
 
         {/* Otros productos */}
-        <div className="mb-2">
+        <div id="sec-otros" className="mb-2 pt-3" style={{ scrollMarginTop: 52 }}>
           <div className="flex items-center justify-between mb-3 px-1">
             <div className="flex items-center gap-2">
               <Package size={16} style={{ color: EXTRA.accent }} />
@@ -559,10 +879,16 @@ export default function InventarioNespresso() {
                   <span className="font-semibold text-[15px] truncate">{e.name}</span>
                   <button aria-label={`Quitar ${e.name}`} onClick={() => setRemoveExtraName(e.name)} className="linkbtn p-1 rounded-full flex-shrink-0" style={{ color: MUTED }}><Trash2 size={15} /></button>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button aria-label={`Restar ${e.name}`} onClick={() => bumpExtra(e.name, -1)} className="tapbtn rounded-full flex items-center justify-center" style={{ width: 42, height: 42, border: `1.5px solid ${LINE}`, background: "#fff", color: INK }}><Minus size={18} /></button>
-                  <span className="text-xl font-bold text-center" style={{ minWidth: 28, fontVariantNumeric: "tabular-nums" }}>{e.qty}</span>
-                  <button aria-label={`Sumar ${e.name}`} onClick={() => bumpExtra(e.name, 1)} className="tapbtn rounded-full flex items-center justify-center shadow-sm" style={{ width: 42, height: 42, background: EXTRA.grad, color: "#fff" }}><Plus size={18} /></button>
+                <div className="flex-shrink-0">
+                  {renderStepper({
+                    id: `extra|${e.name}`,
+                    value: e.qty,
+                    label: e.name,
+                    onMinus: () => bumpExtra(e.name, -1),
+                    onPlus: () => bumpExtra(e.name, 1),
+                    apply: (v) => setExtraQty(e.name, v),
+                    grad: EXTRA.grad,
+                  })}
                 </div>
               </div>
             ))}
@@ -578,11 +904,29 @@ export default function InventarioNespresso() {
         </div>
       </div>
 
+      {/* Aviso de deshacer */}
+      {undo && (
+        <div className="fixed left-0 right-0 px-4 pointer-events-none"
+          style={showSummary || showHistory
+            ? { zIndex: 60, top: "calc(12px + env(safe-area-inset-top, 0px))" }
+            : { zIndex: 60, bottom: `calc(78px + ${SAFE_BOTTOM})` }}>
+          <div role="status" className="toast pointer-events-auto max-w-md mx-auto rounded-xl pl-4 pr-2 py-2 flex items-center gap-3 shadow-lg" style={{ background: INK, color: "#fff" }}>
+            <span className="text-sm flex-1 truncate">{undo.label}</span>
+            <button onClick={doUndo} className="linkbtn rounded-lg px-3 py-2 text-sm font-bold flex items-center gap-1.5 flex-shrink-0" style={{ color: "#F2A23C", background: "rgba(255,255,255,0.08)" }}>
+              <Undo2 size={16} /> Deshacer
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Barra inferior */}
-      <div className="fixed bottom-0 left-0 right-0 z-20" style={{ background: PAPER, borderTop: `1px solid ${LINE}` }}>
+      <div className="fixed bottom-0 left-0 right-0 z-20" style={{ background: PAPER, borderTop: `1px solid ${LINE}`, paddingBottom: SAFE_BOTTOM }}>
         <div className="max-w-md mx-auto px-4 py-3 flex gap-3">
-          <button onClick={() => setShowSummary(true)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm" style={{ background: INK, color: "#fff" }}>
+          <button onClick={() => { setUndo(null); setShowSummary(true); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm" style={{ background: INK, color: "#fff" }}>
             <ClipboardList size={17} /> Resumen para GESIMO
+          </button>
+          <button onClick={() => { setUndo(null); setShowHistory(true); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
+            <History size={18} />
           </button>
           <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
             <RotateCcw size={18} />
@@ -592,9 +936,9 @@ export default function InventarioNespresso() {
 
       {/* Resumen */}
       {showSummary && (
-        <div className="fixed inset-0 z-30 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowSummary(false)}>
+        <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowSummary(false)}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
-            <div className="sticky top-0 flex items-center justify-between px-5 py-4" style={{ background: HEADER_GRAD, color: "#fff" }}>
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4" style={{ background: HEADER_GRAD, color: "#fff" }}>
               <div>
                 <div className="font-bold">Resumen para GESIMO</div>
                 <div className="text-xs" style={{ opacity: 0.9 }}>{today} · {grandTotal} máquinas</div>
@@ -602,47 +946,70 @@ export default function InventarioNespresso() {
               <button onClick={() => setShowSummary(false)} aria-label="Cerrar" className="rounded-full p-1" style={{ color: "#fff" }}><X size={22} /></button>
             </div>
 
+            <div className="px-5 pt-3 flex items-center justify-between gap-3">
+              <span className="text-xs" style={{ color: MUTED }}>
+                {lastEntry ? <>Diferencias vs. conteo del <b>{fmtDateTime(lastEntry.at)}</b></> : "Sin conteos anteriores para comparar"}
+              </span>
+              <button onClick={() => setHideZeros((v) => !v)} aria-pressed={hideZeros}
+                className="linkbtn rounded-full px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 flex-shrink-0"
+                style={{ background: hideZeros ? INK : "#fff", color: hideZeros ? "#fff" : INK, border: `1px solid ${hideZeros ? INK : LINE}` }}>
+                <EyeOff size={14} /> Ocultar ceros
+              </button>
+            </div>
+
             <div className="px-5 py-4 space-y-5">
-              {CATEGORIES.map((cat) => (
-                <div key={cat.id}>
-                  <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: cat.accent }}>{cat.name} · {catTotal(cat)} máquinas</div>
-                  <div className="space-y-2">
-                    {cat.models.map((model) => {
-                      const t = modelTotal(cat.id, model);
-                      if (allSingle(model)) {
-                        const parts = modelBrands(model).map((b) => `${b.label} ${counts[cat.id][model.name][b.id][""] || 0}`).join("  ·  ");
+              {CATEGORIES.map((cat) => {
+                const models = cat.models.filter((m) => !hideZeros || modelTotal(cat.id, m));
+                return (
+                  <div key={cat.id}>
+                    <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: cat.accent }}>
+                      {cat.name} · {catTotal(cat)} máquinas
+                      {lastEntry && <Diff now={catTotal(cat)} before={catTotalIn(lastEntry.counts, cat)} />}
+                    </div>
+                    {models.length === 0 && <div className="text-xs" style={{ color: MUTED }}>Nada contado en {cat.name}.</div>}
+                    <div className="space-y-2">
+                      {models.map((model) => {
+                        const t = modelTotal(cat.id, model);
+                        const diff = lastEntry ? <Diff now={t} before={modelTotalIn(lastEntry.counts, cat.id, model)} /> : null;
+                        if (allSingle(model)) {
+                          return (
+                            <div key={model.name} className="flex items-center justify-between text-sm py-1" style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }}>
+                              <span className="font-medium">{model.name}</span>
+                              <span style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>
+                                {modelBrands(model).filter((b) => !hideZeros || brandTotal(cat.id, model, b.id)).map((b, i) => (
+                                  <span key={b.id}>{i > 0 && "  ·  "}{renderBrandParts(cat.id, model, b.id, INK, false)}</span>
+                                ))}
+                                {" "}<b style={{ color: t ? cat.accent : MUTED }}>{t}</b>{diff}
+                              </span>
+                            </div>
+                          );
+                        }
                         return (
-                          <div key={model.name} className="flex items-center justify-between text-sm py-1" style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }}>
-                            <span className="font-medium">{model.name}</span>
-                            <span style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{parts} <b style={{ color: t ? cat.accent : MUTED }}>{t}</b></span>
+                          <div key={model.name} style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }} className="pb-2">
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="font-semibold">{model.name}</span>
+                              <span><b style={{ color: t ? cat.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{t}</b>{diff}</span>
+                            </div>
+                            {modelBrands(model).filter((b) => !hideZeros || brandTotal(cat.id, model, b.id)).map((b) => (
+                              <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>{renderBrandParts(cat.id, model, b.id, INK, hideZeros)}</div>
+                            ))}
                           </div>
                         );
-                      }
-                      return (
-                        <div key={model.name} style={{ borderBottom: `1px solid ${LINE}`, opacity: t ? 1 : 0.5 }} className="pb-2">
-                          <div className="flex items-center justify-between text-sm">
-                            <span className="font-semibold">{model.name}</span>
-                            <b style={{ color: t ? cat.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{t}</b>
-                          </div>
-                          {modelBrands(model).map((b) => (
-                            <div key={b.id} className="text-xs mt-0.5" style={{ color: MUTED }}>{brandLine(cat.id, model, b.id)}</div>
-                          ))}
-                        </div>
-                      );
-                    })}
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               <div className="flex items-center justify-between pt-1 text-sm font-bold">
                 <span>Total máquinas</span>
-                <span style={{ fontVariantNumeric: "tabular-nums" }}>{grandTotal}</span>
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>{grandTotal}{lastEntry && <Diff now={grandTotal} before={lastEntry.total} />}</span>
               </div>
 
               {extras.length > 0 && (
                 <div>
                   <div className="text-xs font-bold uppercase mb-2" style={{ letterSpacing: "0.1em", color: EXTRA.accent }}>Otros productos · {extrasTotal}</div>
-                  {extras.map((e) => (
+                  {extras.filter((e) => !hideZeros || e.qty).map((e) => (
                     <div key={e.name} className="flex items-center justify-between text-sm py-2" style={{ borderBottom: `1px solid ${LINE}`, opacity: e.qty ? 1 : 0.5 }}>
                       <span className="font-medium">{e.name}</span>
                       <span className="font-bold" style={{ color: e.qty ? EXTRA.accent : MUTED, fontVariantNumeric: "tabular-nums" }}>{e.qty}</span>
@@ -652,7 +1019,7 @@ export default function InventarioNespresso() {
               )}
             </div>
 
-            <div className="px-5 pb-6 pt-1">
+            <div className="px-5 pt-1" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
               <div className="flex gap-3">
                 <a href={waUrl} target="_blank" rel="noopener noreferrer" className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2" style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
                   <Send size={17} /> WhatsApp
@@ -664,7 +1031,71 @@ export default function InventarioNespresso() {
               <button onClick={shareImage} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: HEADER_GRAD, color: "#fff" }}>
                 {imgDone ? (<><Check size={17} /> Imagen lista</>) : (<><ImageIcon size={17} /> Descargar imagen</>)}
               </button>
-              <p className="text-xs mt-2 text-center" style={{ color: MUTED }}>WhatsApp y Copiar envían texto · Imagen crea un archivo para compartir o guardar.</p>
+              <button onClick={saveToHistory} className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 mt-3" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
+                {histDone ? (<><Check size={17} /> Guardado en el historial</>) : (<><History size={17} /> Guardar en el historial</>)}
+              </button>
+              <p className="text-xs mt-2 text-center" style={{ color: MUTED }}>WhatsApp y Copiar envían el resumen completo · Imagen crea un archivo para compartir o guardar.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Historial */}
+      {showHistory && (
+        <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowHistory(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4" style={{ background: INK, color: "#fff" }}>
+              <div>
+                <div className="font-bold">Historial de conteos</div>
+                <div className="text-xs" style={{ opacity: 0.8 }}>Se guarda al reiniciar o desde el resumen · últimos {HISTORY_MAX}</div>
+              </div>
+              <button onClick={() => setShowHistory(false)} aria-label="Cerrar" className="rounded-full p-1" style={{ color: "#fff" }}><X size={22} /></button>
+            </div>
+            <div className="px-5 py-4 space-y-3" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
+              {history.length === 0 && (
+                <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Al reiniciar, el conteo actual se guarda aquí automáticamente.</p>
+              )}
+              {history.map((h, idx) => {
+                const open = openEntry === h.id;
+                const prev = history[idx + 1];
+                return (
+                  <div key={h.id} className="rounded-2xl px-4 py-3 shadow-sm" style={{ background: SURFACE, border: `1px solid ${LINE}` }}>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setOpenEntry(open ? null : h.id)} aria-expanded={open} className="linkbtn flex-1 text-left flex items-center gap-1.5 min-w-0" style={{ background: "transparent", color: INK }}>
+                        <ChevronDown size={18} style={{ color: MUTED, transform: open ? "none" : "rotate(-90deg)", transition: "transform .15s ease", flexShrink: 0 }} />
+                        <span className="min-w-0">
+                          <span className="block font-semibold text-sm">{fmtDateTime(h.at)}</span>
+                          <span className="block text-xs" style={{ color: MUTED }}>
+                            {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? 0}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
+                          </span>
+                        </span>
+                      </button>
+                      <span className="font-bold text-lg" style={{ fontVariantNumeric: "tabular-nums" }}>{h.total}</span>
+                      {prev && <Diff now={h.total} before={prev.total} />}
+                      <button onClick={() => removeHistoryEntry(h.id)} aria-label={`Borrar conteo del ${fmtDateTime(h.at)}`} className="linkbtn p-1.5 rounded-full flex-shrink-0" style={{ color: MUTED }}><Trash2 size={15} /></button>
+                    </div>
+                    {open && (
+                      <div className="mt-2 pt-2 space-y-1 text-xs" style={{ borderTop: `1px solid ${LINE}` }}>
+                        {CATEGORIES.flatMap((c) => c.models.map((m) => ({ c, m, t: modelTotalIn(h.counts, c.id, m) })))
+                          .filter((r) => r.t)
+                          .map((r) => (
+                            <div key={`${r.c.id}/${r.m.name}`} className="flex justify-between">
+                              <span><span style={{ color: r.c.accent, fontWeight: 700 }}>{r.c.name}</span> · {r.m.name}</span>
+                              <b style={{ fontVariantNumeric: "tabular-nums" }}>{r.t}</b>
+                            </div>
+                          ))}
+                        {(h.extras || []).filter((e) => e.qty).map((e) => (
+                          <div key={`x/${e.name}`} className="flex justify-between">
+                            <span><span style={{ color: EXTRA.accent, fontWeight: 700 }}>Otros</span> · {e.name}</span>
+                            <b style={{ fontVariantNumeric: "tabular-nums" }}>{e.qty}</b>
+                          </div>
+                        ))}
+                        {h.total + (h.extrasTotal || 0) === 0 && <div style={{ color: MUTED }}>Conteo vacío.</div>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -672,7 +1103,7 @@ export default function InventarioNespresso() {
 
       {/* Quitar producto extra */}
       {removeExtraName && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setRemoveExtraName(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setRemoveExtraName(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-xs rounded-3xl p-6 text-center">
             <div className="font-bold mb-1">¿Quitar "{removeExtraName}"?</div>
             <p className="text-sm mb-5" style={{ color: MUTED }}>Se elimina y se borra su conteo.</p>
@@ -686,10 +1117,10 @@ export default function InventarioNespresso() {
 
       {/* Reiniciar */}
       {showReset && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowReset(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => setShowReset(false)}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-xs rounded-3xl p-6 text-center">
             <div className="font-bold mb-1">¿Reiniciar el conteo?</div>
-            <p className="text-sm mb-5" style={{ color: MUTED }}>Todos los conteos (máquinas y otros productos) vuelven a 0. No se puede deshacer.</p>
+            <p className="text-sm mb-5" style={{ color: MUTED }}>El conteo actual se guarda en el historial y todo vuelve a 0 (también los modelos revisados).</p>
             <div className="flex gap-3">
               <button onClick={() => setShowReset(false)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#fff", border: `1px solid ${LINE}` }}>Cancelar</button>
               <button onClick={doReset} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#C42E63", color: "#fff" }}>Reiniciar</button>
