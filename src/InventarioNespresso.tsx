@@ -1304,14 +1304,18 @@ export default function InventarioNespresso() {
 
             {/* Acciones siempre a mano */}
             <div className="flex-shrink-0 px-4 pt-3" style={{ borderTop: `1px solid ${LINE}`, background: PAPER, paddingBottom: `calc(12px + ${SAFE_BOTTOM})` }}>
-              <a href={waUrl} target="_blank" rel="noopener noreferrer" onClick={saveToHistory}
+              <button onClick={saveToHistory}
                 className="linkbtn w-full rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm"
-                style={{ background: "#25D366", color: "#fff", textDecoration: "none" }}>
-                <Send size={18} /> Enviar por WhatsApp
-              </a>
+                style={{ background: INK, color: "#fff" }}>
+                {histDone ? <><Check size={18} /> Guardado</> : <><Save size={18} /> Guardar</>}
+              </button>
               <div className="grid grid-cols-3 gap-2 mt-2">
+                <a href={waUrl} target="_blank" rel="noopener noreferrer" onClick={saveToHistory}
+                  className="linkbtn rounded-xl py-2 text-xs font-semibold flex items-center justify-center gap-1.5"
+                  style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK, textDecoration: "none" }}>
+                  <Send size={18} style={{ color: "#1FAF55" }} /> WhatsApp
+                </a>
                 {[
-                  { onClick: saveToHistory, done: histDone, icon: <Save size={18} />, label: "Guardar", doneLabel: "Guardado" },
                   { onClick: copySummary, done: copied, icon: <ClipboardList size={18} />, label: "Copiar", doneLabel: "Copiado" },
                   { onClick: shareImage, done: imgDone, icon: <ImageIcon size={18} />, label: "Imagen", doneLabel: "Lista" },
                 ].map((a) => (
