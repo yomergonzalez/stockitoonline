@@ -28,6 +28,8 @@ Live at **https://stockito.online**.
 - [src/index.css](src/index.css) — Tailwind import + base styles.
 - [src/global.d.ts](src/global.d.ts) — declares `window.storage` so editors don't flag it.
 - [index.html](index.html) — Vite HTML shell.
+- [sheets/](sheets/) — optional Google Sheets backend (`Code.gs`, an Apps Script web app) and its
+  setup guide (`LEEME.md`). The app talks to it via `SHEETS_URL` at the top of the component.
 - [deploy/](deploy/) — `push.sh` (build + rsync to the VPS) and `nginx-stockito.online.conf`
   (a copy of the server's nginx vhost, for reference).
 
@@ -76,5 +78,10 @@ To ship a change:
 - **The build intentionally skips type-checking.** `npm run build` is just `vite build` (esbuild).
   The component is plain untyped JS inside a `.tsx`, so a `tsc` typecheck would fail on implicit
   `any` — do **not** add `tsc -b` to the build script.
+- **History sync is keyed by nickname, not auth.** Each saved count carries the device's nickname
+  (storage key `conteo-apodo`); with `SHEETS_URL` set, entries are pushed to / pulled from the
+  Sheets web app per nickname (case-insensitive). Unsynced saves and deletes are kept locally
+  (`synced: false`, `deleted: true` tombstones) and retried on load, on `online`, and when the
+  history opens. A nickname is not a secret — anyone typing it sees that history.
 - **Data is per-browser.** `localStorage` is not synced across devices; each phone/browser keeps
   its own counts.

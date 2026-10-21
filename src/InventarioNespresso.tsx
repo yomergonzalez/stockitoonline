@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon, ChevronDown, History, Undo2, CircleCheck, Circle, EyeOff } from "lucide-react";
+import { Minus, Plus, Coffee, RotateCcw, ClipboardList, Check, X, Trash2, Package, Send, Image as ImageIcon, ChevronDown, History, Undo2, CircleCheck, Circle, EyeOff, User, Cloud, CloudOff } from "lucide-react";
 
 /* ── Estructura real: modelo → marca → colores ─────────────── */
 const ORIGINAL_MODELS = [
@@ -55,7 +55,26 @@ const EXTRA = {
 
 const STORAGE_KEY = "conteo-actual";
 const HISTORY_KEY = "conteo-historial";
-const HISTORY_MAX = 30;
+const HISTORY_MAX = 50;
+const NICK_KEY = "conteo-apodo";
+
+// URL de la aplicación web de Google Apps Script (ver sheets/LEEME.md).
+// Vacía = el historial se queda solo en este teléfono.
+const SHEETS_URL = "";
+
+const nickKey = (n) => String(n || "").trim().toLowerCase();
+
+/* llamada al script de Google Sheets; text/plain evita la petición previa de CORS */
+const sheetsCall = async (payload) => {
+  const res = await fetch(SHEETS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!data || !data.ok) throw new Error((data && data.error) || "Error de Google Sheets");
+  return data;
+};
 const HEADER_GRAD = "linear-gradient(135deg,#E8842A 0%,#C42E63 100%)";
 
 const INK = "#241A16";
@@ -96,6 +115,25 @@ const modelTotalIn = (c, catId, model) =>
     return s + keys.reduce((t, k) => t + (Number(c?.[catId]?.[model.name]?.[b.id]?.[k]) || 0), 0);
   }, 0);
 const catTotalIn = (c, cat) => cat.models.reduce((s, m) => s + modelTotalIn(c, cat.id, m), 0);
+
+/* filas legibles para la pestaña "Conteos" de la hoja: solo lo que tiene unidades */
+const linesOf = (c, ex) => {
+  const out = [];
+  for (const cat of CATEGORIES) {
+    for (const m of cat.models) {
+      for (const b of BRANDS) {
+        const keys = keysFor(m, b.id);
+        if (!keys) continue;
+        for (const k of keys) {
+          const qty = Number(c?.[cat.id]?.[m.name]?.[b.id]?.[k]) || 0;
+          if (qty) out.push({ cat: cat.name, model: m.name, brand: b.label, color: k, qty });
+        }
+      }
+    }
+  }
+  for (const e of ex || []) if (e.qty) out.push({ cat: "Otros", model: e.name, brand: "", color: "", qty: e.qty });
+  return out;
+};
 
 const MODEL_COUNT = CATEGORIES.reduce((s, c) => s + c.models.length, 0);
 const reviewKey = (catId, mName) => `${catId}/${mName}`;
@@ -173,7 +211,15 @@ export default function InventarioNespresso() {
   const [undo, setUndo] = useState(null);
   const [activeSec, setActiveSec] = useState("original");
   const [scrolled, setScrolled] = useState(false);
+  const [nick, setNick] = useState("");
+  const [showNick, setShowNick] = useState(false);
+  const [nickDraft, setNickDraft] = useState("");
+  const [syncState, setSyncState] = useState(SHEETS_URL ? "idle" : "off");
   const undoTimer = useRef(null);
+  const historyRef = useRef([]);
+  const nickRef = useRef("");
+  const syncingRef = useRef(false);
+  const syncAgainRef = useRef(false);
   const headerRef = useRef(null);
   const scrollRef = useRef(null);
 
@@ -194,8 +240,17 @@ export default function InventarioNespresso() {
           const h = await window.storage.get(HISTORY_KEY);
           if (h && h.value) {
             const arr = JSON.parse(h.value);
-            if (Array.isArray(arr)) setHistory(arr);
+            if (Array.isArray(arr)) {
+              const norm = arr.map((x) => ({ ...x, id: String(x.id) }));
+              historyRef.current = norm;
+              setHistory(norm);
+            }
           }
+          const n = await window.storage.get(NICK_KEY);
+          const savedNick = n && n.value ? String(n.value) : "";
+          nickRef.current = savedNick;
+          setNick(savedNick);
+          if (!savedNick) setShowNick(true);
         }
       } catch (e) {} finally { setLoading(false); }
     })();
@@ -241,6 +296,7 @@ export default function InventarioNespresso() {
   };
 
   const persistHistory = (next) => {
+    historyRef.current = next;
     setHistory(next);
     (async () => {
       try {
@@ -249,9 +305,70 @@ export default function InventarioNespresso() {
     })();
   };
 
+  /* sube a Google Sheets lo pendiente del apodo actual y trae sus conteos */
+  const syncNow = async () => {
+    const forNick = nickRef.current;
+    if (!SHEETS_URL || !forNick) return;
+    if (syncingRef.current) { syncAgainRef.current = true; return; }
+    syncingRef.current = true;
+    setSyncState("syncing");
+    const key = nickKey(forNick);
+    try {
+      const pending = historyRef.current.filter((h) => nickKey(h.nick) === key && !h.synced);
+      for (const h of pending) {
+        if (h.deleted) await sheetsCall({ action: "delete", nick: forNick, id: h.id });
+        else await sheetsCall({ action: "save", nick: forNick, entry: { ...h, synced: undefined, lines: linesOf(h.counts, h.extras) } });
+        // si mientras tanto cambió, se queda pendiente para la próxima vuelta
+        persistHistory(historyRef.current.flatMap((x) => (x === h ? (h.deleted ? [] : [{ ...h, synced: true }]) : [x])));
+      }
+      const { entries } = await sheetsCall({ action: "list", nick: forNick });
+      if (nickKey(nickRef.current) === key) {
+        const cur = historyRef.current;
+        const mine = (h) => nickKey(h.nick) === key;
+        const localPending = cur.filter((h) => mine(h) && !h.synced);
+        const pendingIds = new Set(localPending.map((h) => h.id));
+        const remote = (entries || [])
+          .map((e) => ({ ...e, id: String(e.id), synced: true }))
+          .filter((e) => !pendingIds.has(e.id));
+        const rest = cur.filter((h) => !mine(h));
+        persistHistory([...remote, ...localPending, ...rest].sort((a, b) => String(b.at).localeCompare(String(a.at))));
+      }
+      setSyncState("ok");
+    } catch (e) {
+      setSyncState("error");
+    } finally {
+      syncingRef.current = false;
+      if (syncAgainRef.current) { syncAgainRef.current = false; syncNow(); }
+    }
+  };
+
+  useEffect(() => {
+    if (loading) return;
+    syncNow();
+    const onOnline = () => syncNow();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [loading]);
+
+  const applyNick = () => {
+    const n = nickDraft.trim().slice(0, 30);
+    if (n.length < 2) return;
+    const first = !nickRef.current;
+    nickRef.current = n;
+    setNick(n);
+    (async () => {
+      try { if (window.storage) await window.storage.set(NICK_KEY, n); } catch (e) {}
+    })();
+    // los conteos guardados antes de tener apodo pasan a ser de este apodo
+    if (first) persistHistory(historyRef.current.map((h) => (h.nick ? h : { ...h, nick: n, synced: false })));
+    setOpenEntry(null);
+    setShowNick(false);
+    syncNow();
+  };
+
   /* guarda el estado anterior para poder deshacer el último cambio */
-  const remember = (label) => {
-    setUndo({ label, snap: { counts, extras, reviewed, history, collapsed } });
+  const remember = (label, createdId = null) => {
+    setUndo({ label, createdId, snap: { counts, extras, reviewed, history, collapsed } });
     if (undoTimer.current) clearTimeout(undoTimer.current);
     undoTimer.current = setTimeout(() => setUndo(null), 3000);
   };
@@ -259,7 +376,20 @@ export default function InventarioNespresso() {
     if (!undo) return;
     const { snap } = undo;
     persist(snap.counts, snap.extras, snap.reviewed);
-    if (snap.history !== history) persistHistory(snap.history);
+    if (snap.history !== history) {
+      // lo que cambió vuelve a subirse; lo creado por la acción deshecha se borra también en la hoja
+      const cur = historyRef.current;
+      const curById = new Map(cur.map((h) => [h.id, h]));
+      const snapIds = new Set(snap.history.map((h) => h.id));
+      const restored = snap.history.map((h) => (curById.get(h.id) === h ? h : { ...h, synced: false }));
+      const extra = cur.flatMap((h) => {
+        if (snapIds.has(h.id)) return [];
+        if (h.id !== undo.createdId) return [h];
+        return h.synced ? [{ ...h, deleted: true, synced: false }] : [];
+      });
+      persistHistory([...restored, ...extra]);
+      syncNow();
+    }
     setCollapsed(snap.collapsed);
     setUndo(null);
     if (undoTimer.current) clearTimeout(undoTimer.current);
@@ -327,8 +457,10 @@ export default function InventarioNespresso() {
   };
 
   const makeHistoryEntry = () => ({
-    id: Date.now(),
+    id: String(Date.now()),
     at: new Date().toISOString(),
+    nick: nickRef.current || "",
+    synced: false,
     counts,
     extras,
     total: grandTotal,
@@ -336,8 +468,10 @@ export default function InventarioNespresso() {
     extrasTotal,
   });
   const saveToHistory = () => {
-    remember("Conteo guardado en el historial");
-    persistHistory([makeHistoryEntry(), ...history].slice(0, HISTORY_MAX));
+    const entry = makeHistoryEntry();
+    remember("Conteo guardado en el historial", entry.id);
+    persistHistory([entry, ...historyRef.current].slice(0, HISTORY_MAX));
+    syncNow();
     // al guardar se empieza una nueva ronda de revisión
     persist(counts, extras, {});
     setCollapsed({});
@@ -345,12 +479,15 @@ export default function InventarioNespresso() {
   };
   const removeHistoryEntry = (id) => {
     remember("Conteo borrado del historial");
-    persistHistory(history.filter((h) => h.id !== id));
+    // si ya estaba en la hoja, se marca para borrarlo allí también
+    persistHistory(historyRef.current.flatMap((h) => (h.id !== id ? [h] : h.synced ? [{ ...h, deleted: true, synced: false }] : [])));
+    syncNow();
   };
 
   const doReset = () => {
-    remember("Conteo reiniciado");
-    if (grandTotal + extrasTotal > 0) persistHistory([makeHistoryEntry(), ...history].slice(0, HISTORY_MAX));
+    const entry = grandTotal + extrasTotal > 0 ? makeHistoryEntry() : null;
+    remember("Conteo reiniciado", entry && entry.id);
+    if (entry) { persistHistory([entry, ...historyRef.current].slice(0, HISTORY_MAX)); syncNow(); }
     persist(buildCounts(), extras.map((e) => ({ ...e, qty: 0 })), {});
     setCollapsed({});
     setShowReset(false);
@@ -366,9 +503,12 @@ export default function InventarioNespresso() {
   const grandTotal = CATEGORIES.reduce((s, c) => s + catTotal(c), 0);
   const extrasTotal = extras.reduce((s, e) => s + e.qty, 0);
   const reviewedCount = Object.keys(reviewed).length;
-  const lastEntry = history[0] || null;
+  /* cada apodo ve solo sus conteos (los antiguos sin apodo se ven siempre) */
+  const visibleHistory = history.filter((h) => !h.deleted && (!h.nick || nickKey(h.nick) === nickKey(nick)));
+  const lastEntry = visibleHistory[0] || null;
 
   const today = new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" });
+  const shortToday = new Date().toLocaleDateString("es-ES", { day: "numeric", month: "short" });
   const savedTime = savedAt ? new Date(savedAt).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : null;
 
   /* línea de marca para texto: "Krups: Blanca 2 · Negra 2" o "Krups 5" */
@@ -383,7 +523,7 @@ export default function InventarioNespresso() {
   const allSingle = (model) => modelBrands(model).every((b) => model[b.id].length === 0);
 
   const buildPlainText = () => {
-    const L = [`INVENTARIO POS — ${today}`, ""];
+    const L = [`INVENTARIO POS — ${today}`, ...(nick ? [`Contado por: ${nick}`] : []), ""];
     for (const cat of CATEGORIES) {
       L.push(`${cat.name.toUpperCase()} (${catTotal(cat)} máquinas)`);
       for (const model of cat.models) {
@@ -403,7 +543,7 @@ export default function InventarioNespresso() {
   };
 
   const buildWhatsAppText = () => {
-    const L = [`*INVENTARIO POS* — ${today}`, ""];
+    const L = [`*INVENTARIO POS* — ${today}`, ...(nick ? [`Contado por: ${nick}`] : []), ""];
     for (const cat of CATEGORIES) {
       L.push(`*${cat.name.toUpperCase()}* (${catTotal(cat)} máquinas)`);
       for (const model of cat.models) {
@@ -501,7 +641,7 @@ export default function InventarioNespresso() {
     ctx.textAlign = "left"; ctx.font = `700 54px ${FONT}`;
     ctx.fillText(String(grandTotal), PADX, 112);
     ctx.font = `400 13px ${FONT}`; ctx.globalAlpha = 0.9;
-    ctx.fillText("máquinas en total", PADX, 148); ctx.globalAlpha = 1;
+    ctx.fillText(nick ? `máquinas en total  ·  contado por ${nick}` : "máquinas en total", PADX, 148); ctx.globalAlpha = 1;
     let cy = 92;
     ctx.textAlign = "right";
     for (const c of CATEGORIES) {
@@ -828,7 +968,11 @@ export default function InventarioNespresso() {
                 <Coffee size={18} />
                 <span className="text-xs font-bold uppercase" style={{ letterSpacing: "0.16em" }}>Inventario POS</span>
               </div>
-              <span className="text-xs" style={{ opacity: 0.85 }}>{today}</span>
+              <button onClick={() => { setNickDraft(nick); setShowNick(true); }} aria-label={nick ? `Apodo: ${nick}. Cambiar` : "Elegir apodo"}
+                className="linkbtn rounded-full pl-2 pr-2.5 py-1 text-xs font-bold flex items-center gap-1 min-w-0"
+                style={{ background: "rgba(255,255,255,0.2)", color: "#fff", maxWidth: "55%" }}>
+                <User size={13} className="flex-shrink-0" /> <span className="truncate">{nick || "Elegir apodo"}</span>
+              </button>
             </div>
             <div className="flex items-end justify-between mt-2">
               <div className="leading-none font-bold" style={{ fontSize: "3rem", fontVariantNumeric: "tabular-nums" }}>{grandTotal}</div>
@@ -841,7 +985,7 @@ export default function InventarioNespresso() {
                 ))}
               </div>
             </div>
-            <div className="text-xs mt-1" style={{ opacity: 0.85 }}>máquinas en total{savedTime ? ` · guardado ${savedTime}` : ""}</div>
+            <div className="text-xs mt-1" style={{ opacity: 0.85 }}>máquinas en total · {shortToday}{savedTime ? ` · guardado ${savedTime}` : ""}</div>
             <div className="mt-3">
               <div className="flex items-center justify-between text-xs mb-1" style={{ opacity: 0.95 }}>
                 <span className="flex items-center gap-1"><CircleCheck size={13} /> Modelos revisados</span>
@@ -1038,7 +1182,7 @@ export default function InventarioNespresso() {
           <button onClick={() => { setUndo(null); setShowSummary(true); }} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm flex items-center justify-center gap-2 shadow-sm" style={{ background: INK, color: "#fff" }}>
             <ClipboardList size={17} /> Resumen para GESIMO
           </button>
-          <button onClick={() => { setUndo(null); setShowHistory(true); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
+          <button onClick={() => { setUndo(null); setShowHistory(true); syncNow(); }} aria-label="Historial de conteos" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
             <History size={18} />
           </button>
           <button onClick={() => setShowReset(true)} aria-label="Reiniciar conteo" className="linkbtn rounded-xl px-4 flex items-center justify-center" style={{ background: "#fff", border: `1px solid ${LINE}`, color: INK }}>
@@ -1091,9 +1235,9 @@ export default function InventarioNespresso() {
 
       {/* Historial */}
       {showHistory && (() => {
-        const idx = history.findIndex((h) => h.id === openEntry);
-        const entry = idx >= 0 ? history[idx] : null;
-        const prev = entry ? history[idx + 1] || null : null;
+        const idx = visibleHistory.findIndex((h) => h.id === openEntry);
+        const entry = idx >= 0 ? visibleHistory[idx] : null;
+        const prev = entry ? visibleHistory[idx + 1] || null : null;
         return (
           <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => { setShowHistory(false); setOpenEntry(null); }}>
             <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto">
@@ -1111,8 +1255,14 @@ export default function InventarioNespresso() {
                     </>
                   ) : (
                     <>
-                      <div className="font-bold">Historial de conteos</div>
-                      <div className="text-xs" style={{ opacity: 0.8 }}>Se guarda al reiniciar o desde el resumen · últimos {HISTORY_MAX}</div>
+                      <div className="font-bold">Historial de {nick || "conteos"}</div>
+                      <div className="text-xs flex items-center gap-1" style={{ opacity: 0.85 }}>
+                        {syncState === "off" && <><CloudOff size={13} /> Solo en este teléfono</>}
+                        {syncState === "idle" && <><Cloud size={13} /> Google Sheets</>}
+                        {syncState === "syncing" && <><Cloud size={13} /> Sincronizando…</>}
+                        {syncState === "ok" && <><Cloud size={13} /> Guardado en Google Sheets</>}
+                        {syncState === "error" && <><CloudOff size={13} /> Sin conexión · se enviará cuando haya internet</>}
+                      </div>
                     </>
                   )}
                 </div>
@@ -1131,17 +1281,20 @@ export default function InventarioNespresso() {
                 </div>
               ) : (
                 <div className="px-5 py-4 space-y-3" style={{ paddingBottom: `calc(24px + ${SAFE_BOTTOM})` }}>
-                  {history.length === 0 && (
+                  {visibleHistory.length === 0 && (
                     <p className="text-sm text-center py-6" style={{ color: MUTED }}>Todavía no hay conteos guardados. Usa "Guardar" en el resumen, o al reiniciar se guarda solo.</p>
                   )}
-                  {history.map((h, i) => {
-                    const before = history[i + 1];
+                  {visibleHistory.map((h, i) => {
+                    const before = visibleHistory[i + 1];
                     return (
                       <button key={h.id} onClick={() => setOpenEntry(h.id)}
                         className="linkbtn w-full text-left rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3"
                         style={{ background: SURFACE, border: `1px solid ${LINE}`, color: INK }}>
                         <span className="flex-1 min-w-0">
-                          <span className="block font-semibold text-sm">{fmtDateTime(h.at)}</span>
+                          <span className="block font-semibold text-sm">
+                            {fmtDateTime(h.at)}
+                            {SHEETS_URL && !h.synced && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: "#C9822A" }}>· pendiente de enviar</span>}
+                          </span>
                           <span className="block text-xs" style={{ color: MUTED }}>
                             {CATEGORIES.map((c) => `${c.name} ${h.cats?.[c.id] ?? catTotalIn(h.counts, c)}`).join(" · ")}{h.extrasTotal ? ` · Otros ${h.extrasTotal}` : ""}
                           </span>
@@ -1168,6 +1321,36 @@ export default function InventarioNespresso() {
             <div className="flex gap-3">
               <button onClick={() => setRemoveExtraName(null)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#fff", border: `1px solid ${LINE}` }}>Cancelar</button>
               <button onClick={() => removeExtra(removeExtraName)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#C42E63", color: "#fff" }}>Quitar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Apodo */}
+      {showNick && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(36,26,22,0.5)" }} onClick={() => { if (nick) setShowNick(false); }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: PAPER }} className="w-full max-w-xs rounded-3xl p-6">
+            <div className="flex items-center gap-2 font-bold mb-1"><User size={18} /> ¿Quién cuenta?</div>
+            <p className="text-sm mb-4" style={{ color: MUTED }}>
+              Escribe tu apodo. Tus conteos guardados se separan por apodo: cada uno ve solo los suyos.
+            </p>
+            <input
+              autoFocus
+              value={nickDraft}
+              onChange={(e) => setNickDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applyNick(); }}
+              placeholder="Ej.: Carlos, Tienda Centro…"
+              maxLength={30}
+              className="inp w-full rounded-xl px-3 py-3 mb-2"
+              style={{ border: `1px solid ${LINE}`, background: "#fff", color: INK, fontSize: "16px" }}
+            />
+            <p className="text-xs mb-4" style={{ color: MUTED }}>Quien use el mismo apodo verá los mismos conteos, así que elige uno propio.</p>
+            <div className="flex gap-3">
+              {nick && <button onClick={() => setShowNick(false)} className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: "#fff", border: `1px solid ${LINE}` }}>Cancelar</button>}
+              <button onClick={applyNick} disabled={nickDraft.trim().length < 2}
+                className="linkbtn flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: HEADER_GRAD, color: "#fff", opacity: nickDraft.trim().length < 2 ? 0.5 : 1 }}>
+                {nick ? "Guardar" : "Empezar"}
+              </button>
             </div>
           </div>
         </div>
