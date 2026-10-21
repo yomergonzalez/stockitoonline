@@ -71,7 +71,7 @@ To ship a change:
   `registry=https://registry.npmjs.org/`. Keep that file.
 - **`window.storage` is shimmed in [src/main.tsx](src/main.tsx).** The component was authored for
   an "artifacts" sandbox that provides `window.storage`; in a real browser it's `undefined`, so
-  `main.tsx` backs it with `localStorage` (key `conteo-actual`). **Do not rewrite the component to
+  `main.tsx` backs it with `localStorage` (keys `conteo-actual` for the live count + reviewed models, `conteo-historial` for up to 30 saved past counts). **Do not rewrite the component to
   call `localStorage` directly** — the shim keeps the component portable and untouched.
 - **The build intentionally skips type-checking.** `npm run build` is just `vite build` (esbuild).
   The component is plain untyped JS inside a `.tsx`, so a `tsc` typecheck would fail on implicit
